@@ -2,30 +2,26 @@
    FILE: routes/asset.routes.js
    ============================================================ */
 const express = require('express');
-
 const router = express.Router();
 
-const assetController = require('../controllers/asset.controller');
-
+const asset = require('../controllers/asset.controller');
 const { uploadAsset } = require('../config/cloudinary');
+const { optionalAuth } = require('../middleware/auth.middleware');
 
-/* GET ALL */
-router.get('/', assetController.getAssets);
+/* Public routes */
+router.get('/', asset.getAssets);
+router.get('/category/:cat', asset.getByCategory);
 
-/* GET SINGLE */
-router.get('/:id', assetController.getAsset);
+/* Download route must come BEFORE get single */
+router.post('/:id/download', optionalAuth, asset.downloadAsset);
 
-/* DOWNLOAD */
-router.get('/download/:id', assetController.downloadAsset);
+/* Get single */
+router.get('/:id', asset.getAsset);
 
-/* UPLOAD */
-router.post(
-  '/upload',
-  uploadAsset.single('asset'),
-  assetController.uploadAsset
-);
+/* Upload */
+router.post('/upload', uploadAsset.single('asset'), asset.uploadAsset);
 
-/* DELETE */
-router.delete('/:id', assetController.deleteAsset);
+/* Delete */
+router.delete('/:id', asset.deleteAsset);
 
 module.exports = router;

@@ -138,9 +138,9 @@ await Product.insertMany([
 
   /* Sample digital assets */
   await DigitalAsset.insertMany([
-    { name:'Ferrari SF-25 Dawn', description:'Stunning 4K wallpaper of the Ferrari SF-25 at dawn.', category:'cars', type:'free', resolution:'4K', fileSize:'8.2 MB', downloads:1240, image:{ url:'https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=1600&q=80' }, uploadedBy:admin._id },
-    { name:'Silverstone Aerial', description:'Breathtaking aerial view of Silverstone circuit.', category:'circuits', type:'free', resolution:'2K', fileSize:'6.8 MB', downloads:2100, image:{ url:'https://images.unsplash.com/photo-1504197832061-98658c95b13e?w=1600&q=80' }, uploadedBy:admin._id },
-    { name:'Monaco Neon Circuit', description:'Neon-lit Monaco circuit art — perfect desktop wallpaper.', category:'circuits', type:'free', resolution:'2K', fileSize:'7.6 MB', downloads:2780, image:{ url:'https://images.unsplash.com/photo-1558981403-c5f9899a28bc?w=1600&q=80' }, uploadedBy:admin._id },
+    { name:'Ferrari SF-26', description:'Stunning 4K wallpaper of the Ferrari SF-26.', category:'cars', type:'free', resolution:'4K', fileSize:'8.2 MB', downloads:1240, image:{ url:'https://res.cloudinary.com/drgjslwau/image/upload/v1779467063/F1_Discord_Banner_le2axa.jpg' }, uploadedBy:admin._id },
+    { name:'Rebull F1 Poster', description:'Breathtaking of F1 Redbull poster.', category:'art', type:'free', resolution:'2K', fileSize:'6.8 MB', downloads:2100, image:{ url:'https://res.cloudinary.com/drgjslwau/image/upload/v1779466889/Red_bull_f1_k48xqy.jpg' }, uploadedBy:admin._id },
+    { name:'Mercedes At Silverstone Win', description:'Mercedes Silverstone Win — perfect desktop wallpaper.', category:'circuits', type:'free', resolution:'2K', fileSize:'7.6 MB', downloads:2780, image:{ url:'https://res.cloudinary.com/drgjslwau/image/upload/v1779466682/pexels-jonathanborba-29252129_xekqjf.jpg' }, uploadedBy:admin._id },
   ]);
   console.log('✅ Digital assets seeded');
 
