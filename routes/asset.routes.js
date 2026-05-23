@@ -12,16 +12,17 @@ const { optionalAuth } = require('../middleware/auth.middleware');
 router.get('/', asset.getAssets);
 router.get('/category/:cat', asset.getByCategory);
 
-/* Download route must come BEFORE get single */
+/* Download routes — must come BEFORE get single */
 router.post('/:id/download', optionalAuth, asset.downloadAsset);
+router.get('/:id/download', optionalAuth, asset.downloadAsset);
 
-/* Get single */
+/* Get single asset */
 router.get('/:id', asset.getAsset);
 
-/* Upload */
+/* Upload asset */
 router.post('/upload', uploadAsset.single('asset'), asset.uploadAsset);
 
-/* Delete */
+/* Delete asset */
 router.delete('/:id', asset.deleteAsset);
 
 module.exports = router;
