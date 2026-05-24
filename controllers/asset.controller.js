@@ -1,6 +1,6 @@
 /* ============================================================
-   FILE: controllers/asset.controller.js
-   Real Cloudinary uploads + real file downloads
+   FILE: controllers/asset.controller.js — Digital Assets
+   Fully functional Cloudinary + MongoDB upload/delete/download
    ============================================================ */
 const DigitalAsset = require('../models/DigitalAsset');
 const FanPoints    = require('../models/FanPoints');
@@ -11,21 +11,26 @@ const { successResponse, errorResponse, paginatedResponse } = require('../utils/
 /* ── GET ALL ASSETS ── */
 exports.getAssets = async (req, res, next) => {
   try {
-    const { category, type, page = 1, limit = 12, search } = req.query;
-    const query = { isActive: true };
-    if (category && category !== 'all') query.category = category;
-    if (type)     query.type     = type;
-    if (search)   query.name     = new RegExp(search, 'i');
+    const { category, type, page = 1, limit = 50 } = req.query;
 
-    const total  = await DigitalAsset.countDocuments(query);
+    const query = { isActive: true };
+    if (category && category !== 'all') query.category = String(category).toLowerCase();
+    if (type && type !== 'all') query.type = String(type).toLowerCase();
+
+    const pageNo = Number(page) || 1;
+    const limitNo = Number(limit) || 50;
+
+    const total = await DigitalAsset.countDocuments(query);
     const assets = await DigitalAsset.find(query)
       .sort('-createdAt')
-      .skip((page - 1) * limit)
-      .limit(Number(limit))
+      .skip((pageNo - 1) * limitNo)
+      .limit(limitNo)
       .select('-__v');
 
-    paginatedResponse(res, assets, page, limit, total);
-  } catch (err) { next(err); }
+    return paginatedResponse(res, assets, pageNo, limitNo, total);
+  } catch (err) {
+    next(err);
+  }
 };
 
 /* ── GET SINGLE ASSET ── */
@@ -33,162 +38,95 @@ exports.getAsset = async (req, res, next) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
     if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
-    successResponse(res, 200, 'Asset fetched', { asset });
-  } catch (err) { next(err); }
+    return successResponse(res, 200, 'Asset fetched', { asset });
+  } catch (err) {
+    next(err);
+  }
 };
 
-/* ── UPLOAD NEW ASSET (admin only) ── */
+/* ── UPLOAD ASSET ── */
 exports.uploadAsset = async (req, res, next) => {
   try {
     if (!req.file) return errorResponse(res, 400, 'No file uploaded');
 
-    const { name, description, category, type, resolution, tags } = req.body;
-
-    /* Get file size from Cloudinary response */
-    const fileSizeMB = req.file.size
-      ? `${(req.file.size / (1024 * 1024)).toFixed(1)} MB`
-      : 'Unknown';
+    const cleanTags = (() => {
+      try {
+        if (!req.body.tags) return [];
+        if (Array.isArray(req.body.tags)) return req.body.tags;
+        return JSON.parse(req.body.tags);
+      } catch {
+        return String(req.body.tags || '')
+          .split(',')
+          .map(t => t.trim())
+          .filter(Boolean);
+      }
+    })();
 
     const asset = await DigitalAsset.create({
-      name,
-      description : description || '',
-      category    : category    || 'art',
-      type        : type        || 'free',
-      resolution  : resolution  || 'HD',
-      fileSize    : fileSizeMB,
-      tags        : tags ? tags.split(',').map(t => t.trim()) : [],
+      name        : req.body.name || req.body.title || req.file.originalname || 'Paddox Asset',
+      description : req.body.description || 'Uploaded from PADDOX admin panel',
+      category    : String(req.body.category || 'cars').toLowerCase(),
+      type        : String(req.body.type || req.body.access || 'free').toLowerCase(),
+      resolution  : req.body.resolution || '4K',
+      tags        : cleanTags,
       image       : {
-        url     : req.file.path,       /* Cloudinary URL */
-        publicId: req.file.filename,   /* Cloudinary public ID */
+        url      : req.file.path,
+        publicId : req.file.filename,
       },
-      uploadedBy  : req.user._id,
+      fileSize    : `${((req.file.size || 0) / (1024 * 1024)).toFixed(1)} MB`,
+      downloads   : 0,
+      isActive    : true,
+      uploadedBy  : req.user?._id || undefined,
     });
 
-    successResponse(res, 201, 'Asset uploaded successfully', { asset });
-  } catch (err) { next(err); }
+    return successResponse(res, 201, 'Asset uploaded', { asset });
+  } catch (err) {
+    next(err);
+  }
 };
 
 /* ── DOWNLOAD ASSET ── */
-/* This is the KEY function — it returns a real downloadable URL */
 exports.downloadAsset = async (req, res, next) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
     if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
 
-    /* Premium assets require login */
-    if (asset.type === 'premium') {
-      if (!req.user) {
-        return errorResponse(res, 401, 'Create a free account to download premium wallpapers');
-      }
+    if (asset.type === 'premium' && !req.user) {
+      return errorResponse(res, 401, 'Sign in to access premium wallpapers');
     }
 
-    /* Generate a signed Cloudinary download URL */
-    /* This URL forces a download (attachment) instead of opening in browser */
-    let downloadUrl;
-    try {
-      /* Option 1: Use Cloudinary signed URL with download flag */
-      downloadUrl = cloudinary.url(asset.image.publicId, {
-        resource_type: 'image',
-        type         : 'upload',
-        flags        : 'attachment',   /* This makes browser download the file */
-        format       : 'jpg',
-        quality      : 'auto',
-        secure       : true,
-      });
-    } catch {
-      /* Option 2: Fallback — use the direct URL */
-      downloadUrl = asset.image.url;
+    asset.downloads = (asset.downloads || 0) + 1;
+    await asset.save({ validateBeforeSave: false });
+
+    if (req.user?._id) {
+      await FanPoints.create({ user: req.user._id, action: 'download', points: 10, meta: { assetId: asset._id } });
+      await User.findByIdAndUpdate(req.user._id, { $inc: { fanPoints: 10 } });
     }
 
-    /* Track download count */
-    await DigitalAsset.findByIdAndUpdate(req.params.id, {
-      $inc: { downloads: 1 }
+    return successResponse(res, 200, 'Download authorised', {
+      downloadUrl: asset.image?.url,
+      url: asset.image?.url,
+      name: asset.name,
+      downloads: asset.downloads,
     });
-
-    /* Award fan points for downloading */
-    if (req.user) {
-      const pointsEarned = asset.type === 'premium' ? 20 : 10;
-      await FanPoints.create({
-        user  : req.user._id,
-        action: 'download',
-        points: pointsEarned,
-        meta  : { assetId: asset._id, assetName: asset.name }
-      });
-      await User.findByIdAndUpdate(req.user._id, {
-        $inc: { fanPoints: pointsEarned }
-      });
-    }
-
-    successResponse(res, 200, 'Download authorised', {
-      downloadUrl,
-      name       : asset.name,
-      resolution : asset.resolution,
-      fileSize   : asset.fileSize,
-      type       : asset.type,
-    });
-
-  } catch (err) { next(err); }
+  } catch (err) {
+    next(err);
+  }
 };
 
-/* ── UPDATE ASSET (admin) ── */
-exports.updateAsset = async (req, res, next) => {
-  try {
-    const asset = await DigitalAsset.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    );
-    if (!asset) return errorResponse(res, 404, 'Asset not found');
-    successResponse(res, 200, 'Asset updated', { asset });
-  } catch (err) { next(err); }
-};
-
-/* ── DELETE ASSET (admin) ── */
+/* ── DELETE ASSET ── */
 exports.deleteAsset = async (req, res, next) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
     if (!asset) return errorResponse(res, 404, 'Asset not found');
 
-    /* Delete from Cloudinary too */
     if (asset.image?.publicId) {
-      await cloudinary.uploader.destroy(asset.image.publicId);
+      await cloudinary.uploader.destroy(asset.image.publicId).catch(() => null);
     }
 
     await asset.deleteOne();
-    successResponse(res, 200, 'Asset deleted');
-  } catch (err) { next(err); }
-};
-
-/* ── GET ASSETS BY CATEGORY ── */
-exports.getByCategory = async (req, res, next) => {
-  try {
-    const assets = await DigitalAsset.find({
-      category: req.params.cat,
-      isActive: true
-    }).sort('-downloads');
-    successResponse(res, 200, 'Assets fetched', { assets, count: assets.length });
-  } catch (err) { next(err); }
-};
-
-/* ── GET DOWNLOAD STATS (admin) ── */
-exports.getDownloadStats = async (req, res, next) => {
-  try {
-    const stats = await DigitalAsset.aggregate([
-      { $match: { isActive: true } },
-      { $group: {
-        _id      : '$category',
-        total    : { $sum: '$downloads' },
-        count    : { $sum: 1 },
-        topAsset : { $max: '$name' }
-      }},
-      { $sort: { total: -1 } }
-    ]);
-    const totalDownloads = await DigitalAsset.aggregate([
-      { $group: { _id: null, total: { $sum: '$downloads' } } }
-    ]);
-    successResponse(res, 200, 'Download stats', {
-      byCategory   : stats,
-      totalDownloads: totalDownloads[0]?.total || 0
-    });
-  } catch (err) { next(err); }
+    return successResponse(res, 200, 'Asset deleted');
+  } catch (err) {
+    next(err);
+  }
 };
