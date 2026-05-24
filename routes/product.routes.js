@@ -1,19 +1,27 @@
-
 /* ============================================================
    FILE: routes/product.routes.js
-   ============================================================ */
-const express = require('express');
-const router  = express.Router();
-const product = require('../controllers/product.controller');
-const { protect, adminOnly, optionalAuth } = require('../middleware/auth.middleware');
-const { uploadProduct } = require('../config/cloudinary');
+============================================================ */
 
-router.get('/',          optionalAuth, product.getProducts);
-router.get('/:id',       optionalAuth, product.getProduct);
-router.post('/',         protect, adminOnly, uploadProduct.array('images', 6), product.createProduct);
-router.put('/:id',       protect, adminOnly, product.updateProduct);
-router.delete('/:id',    protect, adminOnly, product.deleteProduct);
-router.post('/:id/review', protect, product.addReview);
-router.get('/:id/reviews', product.getReviews);
+const express = require('express');
+
+const router = express.Router();
+
+const productController =
+  require('../controllers/product.controller');
+
+/* GET ALL */
+router.get('/', productController.getProducts);
+
+/* GET SINGLE */
+router.get('/:id', productController.getProduct);
+
+/* CREATE */
+router.post('/', productController.createProduct);
+
+/* UPDATE */
+router.put('/:id', productController.updateProduct);
+
+/* DELETE */
+router.delete('/:id', productController.deleteProduct);
 
 module.exports = router;
