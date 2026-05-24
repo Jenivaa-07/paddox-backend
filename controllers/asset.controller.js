@@ -130,3 +130,41 @@ exports.deleteAsset = async (req, res, next) => {
     next(err);
   }
 };
+/* ── UPDATE ASSET ── */
+exports.updateAsset = async (req, res, next) => {
+  try {
+
+    const asset = await DigitalAsset.findById(req.params.id);
+
+    if (!asset) {
+      return errorResponse(res, 404, 'Asset not found');
+    }
+
+    asset.name =
+      req.body.name || asset.name;
+
+    asset.description =
+      req.body.description || asset.description;
+
+    asset.category =
+      req.body.category || asset.category;
+
+    asset.type =
+      req.body.type || asset.type;
+
+    asset.resolution =
+      req.body.resolution || asset.resolution;
+
+    await asset.save();
+
+    return successResponse(
+      res,
+      200,
+      'Asset updated',
+      { asset }
+    );
+
+  } catch (err) {
+    next(err);
+  }
+};

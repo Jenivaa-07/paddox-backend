@@ -14,6 +14,7 @@ router.post('/', uploadAsset.single('asset'), assetController.uploadAsset);
 router.get('/:id/download', assetController.downloadAsset);
 router.get('/download/:id', assetController.downloadAsset);
 router.get('/:id', assetController.getAsset);
+router.put('/:id', assetController.updateAsset);
 router.delete('/:id', assetController.deleteAsset);
 
 module.exports = router;
