@@ -106,6 +106,22 @@ function buildProductPayload(body = {}, req = {}) {
     }];
   }
 
+  if (body.ratings && body.ratings.average !== undefined) {
+    const avg = Math.max(0, Math.min(5, Number(body.ratings.average || 0)));
+
+    payload.ratings = {
+      average: avg,
+      count: Number(body.ratings.count || (avg > 0 ? 1 : 0))
+    };
+  } else if (body.rating !== undefined) {
+    const avg = Math.max(0, Math.min(5, Number(body.rating || 0)));
+
+    payload.ratings = {
+      average: avg,
+      count: avg > 0 ? 1 : 0
+    };
+  }
+
   if (req.user?._id) {
     payload.createdBy = req.user._id;
   }
