@@ -1,6 +1,6 @@
 /* ============================================================
    FILE: controllers/asset.controller.js — Digital Assets
-   Fully functional Cloudinary + MongoDB upload/delete/download
+   Realtime downloads + account download history
    ============================================================ */
 const DigitalAsset = require('../models/DigitalAsset');
 const FanPoints    = require('../models/FanPoints');
@@ -8,8 +8,16 @@ const User         = require('../models/User');
 const { cloudinary } = require('../config/cloudinary');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
 
+function serverError(res, err, label = 'Server error') {
+  console.error(label, err);
+  return res.status(500).json({
+    success: false,
+    message: err.message || label
+  });
+}
+
 /* ── GET ALL ASSETS ── */
-exports.getAssets = async (req, res, next) => {
+exports.getAssets = async (req, res) => {
   try {
     const { category, type, page = 1, limit = 50 } = req.query;
 
@@ -29,23 +37,23 @@ exports.getAssets = async (req, res, next) => {
 
     return paginatedResponse(res, assets, pageNo, limitNo, total);
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Fetch assets failed');
   }
 };
 
 /* ── GET SINGLE ASSET ── */
-exports.getAsset = async (req, res, next) => {
+exports.getAsset = async (req, res) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
     if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
     return successResponse(res, 200, 'Asset fetched', { asset });
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Fetch asset failed');
   }
 };
 
 /* ── UPLOAD ASSET ── */
-exports.uploadAsset = async (req, res, next) => {
+exports.uploadAsset = async (req, res) => {
   try {
     if (!req.file) return errorResponse(res, 400, 'No file uploaded');
 
@@ -81,15 +89,18 @@ exports.uploadAsset = async (req, res, next) => {
 
     return successResponse(res, 201, 'Asset uploaded', { asset });
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Upload asset failed');
   }
 };
 
 /* ── DOWNLOAD ASSET ── */
-exports.downloadAsset = async (req, res, next) => {
+exports.downloadAsset = async (req, res) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
-    if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
+
+    if (!asset || !asset.isActive) {
+      return errorResponse(res, 404, 'Asset not found');
+    }
 
     if (asset.type === 'premium' && !req.user) {
       return errorResponse(res, 401, 'Sign in to access premium wallpapers');
@@ -99,72 +110,71 @@ exports.downloadAsset = async (req, res, next) => {
     await asset.save({ validateBeforeSave: false });
 
     if (req.user?._id) {
-      await FanPoints.create({ user: req.user._id, action: 'download', points: 10, meta: { assetId: asset._id } });
-      await User.findByIdAndUpdate(req.user._id, { $inc: { fanPoints: 10 } });
+      await FanPoints.create({
+        user: req.user._id,
+        action: 'download',
+        points: 10,
+        meta: {
+          assetId: asset._id,
+          assetName: asset.name,
+          assetImage: asset.image?.url
+        }
+      });
+
+      await User.findByIdAndUpdate(
+        req.user._id,
+        { $inc: { fanPoints: 10 } }
+      );
     }
 
     return successResponse(res, 200, 'Download authorised', {
+      asset,
       downloadUrl: asset.image?.url,
       url: asset.image?.url,
       name: asset.name,
       downloads: asset.downloads,
     });
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Download asset failed');
   }
 };
 
 /* ── DELETE ASSET ── */
-exports.deleteAsset = async (req, res, next) => {
+exports.deleteAsset = async (req, res) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
     if (!asset) return errorResponse(res, 404, 'Asset not found');
 
-    if (asset.image?.publicId) {
+    if (asset.image?.publicId && cloudinary) {
       await cloudinary.uploader.destroy(asset.image.publicId).catch(() => null);
     }
 
     await asset.deleteOne();
     return successResponse(res, 200, 'Asset deleted');
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Delete asset failed');
   }
 };
-/* ── UPDATE ASSET ── */
-exports.updateAsset = async (req, res, next) => {
-  try {
 
+/* ── UPDATE ASSET ── */
+exports.updateAsset = async (req, res) => {
+  try {
     const asset = await DigitalAsset.findById(req.params.id);
 
     if (!asset) {
       return errorResponse(res, 404, 'Asset not found');
     }
 
-    asset.name =
-      req.body.name || asset.name;
-
-    asset.description =
-      req.body.description || asset.description;
-
-    asset.category =
-      req.body.category || asset.category;
-
-    asset.type =
-      req.body.type || asset.type;
-
-    asset.resolution =
-      req.body.resolution || asset.resolution;
+    asset.name = req.body.name || asset.name;
+    asset.description = req.body.description || asset.description;
+    asset.category = req.body.category || asset.category;
+    asset.type = req.body.type || asset.type;
+    asset.resolution = req.body.resolution || asset.resolution;
 
     await asset.save();
 
-    return successResponse(
-      res,
-      200,
-      'Asset updated',
-      { asset }
-    );
-
+    return successResponse(res, 200, 'Asset updated', { asset });
   } catch (err) {
-    next(err);
+    return serverError(res, err, 'Update asset failed');
   }
 };

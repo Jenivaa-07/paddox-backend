@@ -185,10 +185,49 @@ exports.getFanPoints = async (req, res) => {
 /* ── GET DOWNLOADS ── */
 exports.getDownloads = async (req, res) => {
   try {
-    const assets = await DigitalAsset.find({ type:'free', isActive:true }).select('-__v');
-    return successResponse(res, 200, 'Downloads fetched', { assets });
+    const history = await FanPoints.find({
+      user: req.user._id,
+      action: 'download',
+      'meta.assetId': { $exists: true }
+    })
+      .sort('-createdAt')
+      .limit(100)
+      .lean();
+
+    const latestByAsset = new Map();
+
+    history.forEach(item => {
+      const assetId = String(item.meta?.assetId || '');
+
+      if (assetId && !latestByAsset.has(assetId)) {
+        latestByAsset.set(assetId, item.createdAt);
+      }
+    });
+
+    const ids = [...latestByAsset.keys()];
+
+    const assets = ids.length
+      ? await DigitalAsset.find({
+          _id: { $in: ids },
+          isActive: true
+        }).select('-__v')
+      : [];
+
+    const sortedAssets = assets
+      .map(asset => {
+        const obj = asset.toObject ? asset.toObject() : asset;
+        obj.downloadedAt = latestByAsset.get(String(obj._id));
+        return obj;
+      })
+      .sort((a, b) => new Date(b.downloadedAt || 0) - new Date(a.downloadedAt || 0));
+
+    return successResponse(res, 200, 'Downloads fetched', {
+      assets: sortedAssets,
+      count: sortedAssets.length
+    });
 
   } catch (err) {
     return serverError(res, err, 'Get downloads failed');
   }
 };
+
