@@ -1,21 +1,30 @@
 /* ============================================================
    FILE: routes/order.routes.js
+   PADDOX — ORDER ROUTES
+   Important: admin routes must be ABOVE /:id routes
    ============================================================ */
+
 const express = require('express');
 const router  = express.Router();
-const order   = require('../controllers/order.controller');
-const { protect } = require('../middleware/auth.middleware');
+
+const order = require('../controllers/order.controller');
+
+const {
+  protect,
+  adminOnly
+} = require('../middleware/auth.middleware');
 
 router.use(protect);
 
+/* User order routes */
 router.post('/', order.placeOrder);
-
-// Admin dashboard routes must come BEFORE /:id.
-// For this project/demo, any logged-in user can read the admin list.
-router.get('/admin/all', order.getAllOrders);
-router.put('/admin/:id/status', order.updateOrderStatus);
-
 router.get('/', order.getMyOrders);
+
+/* Admin order routes must come before /:id */
+router.get('/admin/all', adminOnly, order.getAllOrders);
+router.put('/admin/:id/status', adminOnly, order.updateOrderStatus);
+
+/* Dynamic user routes */
 router.get('/:id', order.getOrder);
 router.get('/:id/track', order.trackOrder);
 router.put('/:id/cancel', order.cancelOrder);
