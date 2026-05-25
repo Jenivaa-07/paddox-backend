@@ -79,7 +79,14 @@ exports.placeOrder = async (req, res, next) => {
     } catch { /* socket not critical */ }
 
     successResponse(res, 201, 'Order placed successfully', { order, pointsEarned });
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── GET USER ORDERS ── */
@@ -97,7 +104,14 @@ exports.getMyOrders = async (req, res, next) => {
       .populate('items.product', 'name images slug');
 
     paginatedResponse(res, orders, page, limit, total);
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── GET SINGLE ORDER ── */
@@ -107,7 +121,14 @@ exports.getOrder = async (req, res, next) => {
       .populate('items.product', 'name images slug team');
     if (!order) return errorResponse(res, 404, 'Order not found');
     successResponse(res, 200, 'Order fetched', { order });
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── TRACK ORDER ── */
@@ -117,7 +138,14 @@ exports.trackOrder = async (req, res, next) => {
       .select('orderNumber status statusHistory tracking payment.status');
     if (!order) return errorResponse(res, 404, 'Order not found');
     successResponse(res, 200, 'Tracking info fetched', { order });
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── CANCEL ORDER ── */
@@ -145,7 +173,14 @@ exports.cancelOrder = async (req, res, next) => {
     );
 
     successResponse(res, 200, 'Order cancelled successfully', { order });
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── ADMIN: GET ALL ORDERS ── */
@@ -164,7 +199,14 @@ exports.getAllOrders = async (req, res, next) => {
       .populate('user', 'firstName lastName email');
 
     paginatedResponse(res, orders, page, limit, total);
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
 /* ── ADMIN: UPDATE ORDER STATUS ── */
@@ -197,6 +239,13 @@ exports.updateOrderStatus = async (req, res, next) => {
     }
 
     successResponse(res, 200, 'Order status updated', { order });
-  } catch (err) { next(err); }
+  } catch (err) {
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    message: err.message || 'Server error'
+  });
+}
 };
 
