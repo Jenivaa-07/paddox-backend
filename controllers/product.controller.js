@@ -58,7 +58,7 @@ exports.getProduct = async (req, res, next) => {
 exports.createProduct = async (req, res, next) => {
   try {
     const images = req.files?.map(f => ({ url:f.path, publicId:f.filename, alt:f.originalname })) || [];
-    const product = await Product.create({ ...req.body, images, createdBy:req.user._id });
+    const product = await Product.create({ ...req.body, images: images.length ? images : req.body.images, createdBy:req.user?._id });
     successResponse(res, 201, 'Product created', { product });
   } catch (err) { next(err); }
 };
