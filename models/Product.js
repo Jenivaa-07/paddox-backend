@@ -1,7 +1,9 @@
-
 /* ============================================================
    FILE: models/Product.js
+   PADDOX — FIXED PRODUCT MODEL
+   Fixes: "next is not a function" during product save
    ============================================================ */
+
 const mongoose = require('mongoose');
 const slugify  = require('slugify');
 
@@ -15,7 +17,7 @@ const productSchema = new mongoose.Schema({
   price       : { type:Number, required:[true,'Price required'], min:0 },
   salePrice   : { type:Number, default:null },
   onSale      : { type:Boolean, default:false },
-  badge       : { type:String, enum:['new','hot','ltd','sale',null], default:null },
+  badge       : { type:String, enum:['new','hot','ltd','sale',null,''], default:null },
   images      : [{ url:{ type:String, required:true }, publicId:String, alt:String }],
   emoji       : { type:String, default:'🏎️' },
   sizes       : [{ type:String, enum:['XS','S','M','L','XL','XXL','One Size'] }],
@@ -35,12 +37,20 @@ const productSchema = new mongoose.Schema({
   createdBy   : { type:mongoose.Schema.Types.ObjectId, ref:'User' },
 }, { timestamps:true, toJSON:{ virtuals:true }, toObject:{ virtuals:true } });
 
-/* Auto-generate slug */
-productSchema.pre('save', function(next) {
-  if (this.isModified('name')) {
+/* Auto-generate slug
+   IMPORTANT:
+   Do NOT use next() here. Your deployed Mongoose version supports
+   promise/async middleware, so calling next() caused:
+   "next is not a function"
+*/
+productSchema.pre('save', function() {
+  if (this.isModified('name') || !this.slug) {
     this.slug = slugify(this.name, { lower:true, strict:true });
   }
-  next();
+
+  if (this.badge === '') {
+    this.badge = null;
+  }
 });
 
 /* Virtual: effective price */
@@ -60,4 +70,6 @@ productSchema.index({ category:1, isActive:1 });
 productSchema.index({ price:1 });
 productSchema.index({ 'ratings.average':-1 });
 
-module.exports = mongoose.model('Product', productSchema);
+module.exports =
+  mongoose.models.Product ||
+  mongoose.model('Product', productSchema);
