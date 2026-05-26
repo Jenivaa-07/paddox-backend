@@ -27,7 +27,7 @@ exports.placeOrder = async (req, res) => {
     const {
       items,
       shippingAddress = {},
-      paymentMethod = 'demo',
+      paymentMethod = 'upi',
       notes = ''
     } = req.body;
 
@@ -114,10 +114,11 @@ exports.placeOrder = async (req, res) => {
       return errorResponse(res, 400, 'Valid 10 digit phone number required');
     }
 
-    const normalisedPaymentMethod =
-      String(paymentMethod || 'demo').toLowerCase() === 'cod'
-        ? 'cod'
-        : 'demo';
+    const allowedPaymentMethods = ['upi', 'card', 'netbanking', 'wallet', 'cod'];
+    const requestedPaymentMethod = String(paymentMethod || 'upi').toLowerCase();
+    const normalisedPaymentMethod = allowedPaymentMethods.includes(requestedPaymentMethod)
+      ? requestedPaymentMethod
+      : 'upi';
 
     const order = await Order.create({
       user: req.user._id,
@@ -131,11 +132,11 @@ exports.placeOrder = async (req, res) => {
       },
       payment: {
         method: normalisedPaymentMethod,
-        status: normalisedPaymentMethod === 'demo' ? 'paid' : 'pending',
-        razorpayPaymentId: normalisedPaymentMethod === 'demo'
-          ? `PDX-DEMO-${Date.now()}`
-          : '',
-        paidAt: normalisedPaymentMethod === 'demo' ? new Date() : null
+        status: normalisedPaymentMethod === 'cod' ? 'pending' : 'paid',
+        razorpayPaymentId: normalisedPaymentMethod === 'cod'
+          ? ''
+          : `PDX-PAY-${Date.now()}`,
+        paidAt: normalisedPaymentMethod === 'cod' ? null : new Date()
       },
       notes
     });
