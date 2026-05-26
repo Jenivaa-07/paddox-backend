@@ -27,7 +27,7 @@ exports.placeOrder = async (req, res) => {
     const {
       items,
       shippingAddress = {},
-      paymentMethod = 'razorpay',
+      paymentMethod = 'demo',
       notes = ''
     } = req.body;
 
@@ -85,14 +85,39 @@ exports.placeOrder = async (req, res) => {
     const total = subtotal + shipping + tax;
 
     const safeShippingAddress = {
-      name: shippingAddress.name || `${req.user?.firstName || 'Paddox'} ${req.user?.lastName || 'Fan'}`.trim(),
-      line1: shippingAddress.line1 || shippingAddress.address || 'Demo Address',
-      city: shippingAddress.city || 'Chennai',
-      state: shippingAddress.state || 'Tamil Nadu',
-      pincode: shippingAddress.pincode || shippingAddress.zip || '600001',
-      phone: shippingAddress.phone || '9876543210',
-      country: shippingAddress.country || 'India'
+      name: String(shippingAddress.name || '').trim(),
+      line1: String(shippingAddress.line1 || shippingAddress.address || '').trim(),
+      line2: String(shippingAddress.line2 || '').trim(),
+      city: String(shippingAddress.city || '').trim(),
+      state: String(shippingAddress.state || '').trim(),
+      pincode: String(shippingAddress.pincode || shippingAddress.zip || '').trim(),
+      phone: String(shippingAddress.phone || '').trim(),
+      country: String(shippingAddress.country || 'India').trim() || 'India'
     };
+
+    const requiredShippingFields = ['name', 'line1', 'city', 'state', 'pincode', 'phone'];
+    const missingShippingFields = requiredShippingFields.filter(field => !safeShippingAddress[field]);
+
+    if (missingShippingFields.length) {
+      return errorResponse(
+        res,
+        400,
+        `Missing shipping details: ${missingShippingFields.join(', ')}`
+      );
+    }
+
+    if (!/^\d{6}$/.test(safeShippingAddress.pincode)) {
+      return errorResponse(res, 400, 'Valid 6 digit pincode required');
+    }
+
+    if (!/^\d{10}$/.test(safeShippingAddress.phone.replace(/\D/g, ''))) {
+      return errorResponse(res, 400, 'Valid 10 digit phone number required');
+    }
+
+    const normalisedPaymentMethod =
+      String(paymentMethod || 'demo').toLowerCase() === 'cod'
+        ? 'cod'
+        : 'demo';
 
     const order = await Order.create({
       user: req.user._id,
@@ -105,7 +130,12 @@ exports.placeOrder = async (req, res) => {
         total
       },
       payment: {
-        method: paymentMethod
+        method: normalisedPaymentMethod,
+        status: normalisedPaymentMethod === 'demo' ? 'paid' : 'pending',
+        razorpayPaymentId: normalisedPaymentMethod === 'demo'
+          ? `PDX-DEMO-${Date.now()}`
+          : '',
+        paidAt: normalisedPaymentMethod === 'demo' ? new Date() : null
       },
       notes
     });
@@ -234,6 +264,24 @@ exports.getOrder = async (req, res) => {
 
   } catch (err) {
     return serverError(res, err, 'Get order failed');
+  }
+};
+
+
+/* ── ADMIN: GET SINGLE ORDER RECEIPT ── */
+exports.adminGetOrder = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id)
+      .populate('user', 'firstName lastName email')
+      .populate('items.product', 'name images slug team');
+
+    if (!order) {
+      return errorResponse(res, 404, 'Order not found');
+    }
+
+    return successResponse(res, 200, 'Order fetched', { order });
+  } catch (err) {
+    return serverError(res, err, 'Admin get order failed');
   }
 };
 
