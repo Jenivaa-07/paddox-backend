@@ -693,8 +693,7 @@ exports.getPitWallWeekend = async (req, res, next) => {
         return { ...s, date: dt, available: Boolean(os), openF1: Boolean(os), session_key: os?.session_key || null, status, hasTiming };
       }));
 
-      sessions = timingChecks.length ? timingChecks : ['FP1','FP2','FP3','Qualifying','Sprint Qualifying','Sprint','Race']
-        .map(k => ({ key:k, label: sessionLabelForBackend(k), available:false, openF1:false, status:'TBA', hasTiming:false }));
+      sessions = timingChecks;
 
       const latestWithTiming = [...sessions]
         .filter(s => s.hasTiming)
@@ -702,7 +701,7 @@ exports.getPitWallWeekend = async (req, res, next) => {
       const latestPast = [...sessions]
         .filter(s => s.date && new Date(s.date).getTime() <= now)
         .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))[0];
-      const defaultSession = latestWithTiming?.key || latestPast?.key || sessions[0]?.key || 'Race';
+      const defaultSession = latestWithTiming?.key || latestPast?.key || sessions[0]?.key || '';
 
       const round = race ? Number(race.round) : requestedRound || null;
       return {
@@ -714,7 +713,7 @@ exports.getPitWallWeekend = async (req, res, next) => {
           flag: getFlagEmoji(race.Circuit?.Location?.country)
         } : {
           round,
-          name: meeting?.meeting_name || 'Latest OpenF1 Meeting',
+          name: meeting?.meeting_name || '',
           circuit: meeting?.circuit_short_name || '',
           location: meeting?.location || '',
           country: meeting?.country_name || '',
@@ -770,22 +769,6 @@ exports.getPitWallSession = async (req, res, next) => {
 
       const hasRealTiming = Boolean((laps || []).length || (stints || []).length || (intervals || []).length);
       if (!hasRealTiming) {
-        const profileMap = await getProfileImageMap();
-        const rows = (drivers || []).map((d, index) => {
-          const fullName = d.full_name || d.broadcast_name || `${d.first_name || ''} ${d.last_name || ''}`.trim();
-          return {
-            driverNumber: d.driver_number,
-            position: index + 1,
-            code: d.name_acronym || normalizeCode(fullName),
-            name: fullName,
-            team: d.team_name || '',
-            teamColor: d.team_colour ? `#${String(d.team_colour).replace('#','')}` : getTeamColor(String(d.team_name || '').toLowerCase().replaceAll(' ', '_')),
-            flag: flagFromCountryCode(d.country_code),
-            image: imageForDriver(d, profileMap),
-            gap: 'WAITING', bestLap: '—', lastLap: '—', s1: '—', s2: '—', s3: '—', laps: 0, tyre: '', tyreAge: null,
-            noTiming: true
-          };
-        });
         const w = (weather || [])[weather.length - 1] || null;
         return {
           year, round, session: sessionKey,
@@ -796,7 +779,8 @@ exports.getPitWallSession = async (req, res, next) => {
             : 'OpenF1 historical/free mode via PADDOX backend proxy',
           dataQuality: 'NO_TIMING_DATA',
           live: false,
-          rows,
+          rows: [],
+          driverMetaCount: (drivers || []).length,
           weather: w ? {
             airTemp: w.air_temperature,
             trackTemp: w.track_temperature,
@@ -806,7 +790,7 @@ exports.getPitWallSession = async (req, res, next) => {
             summary: `Air ${Math.round(w.air_temperature || 0)}°C · Track ${Math.round(w.track_temperature || 0)}°C · Humidity ${Math.round(w.humidity || 0)}%`
           } : null,
           raceControl: (raceControl || []).slice(-12),
-          message: 'OpenF1 returned drivers/session metadata, but no lap, interval or tyre stint records for this session yet.',
+          message: 'OpenF1 returned no lap, interval or tyre stint records for this session yet. No fallback timing rows were generated.',
           fetchedAt: new Date().toISOString()
         };
       }
