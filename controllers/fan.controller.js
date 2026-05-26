@@ -8,6 +8,7 @@ const FanPost    = require('../models/FanPost');
 const FanPoints  = require('../models/FanPoints');
 const User       = require('../models/User');
 const Quote      = require('../models/Quote');
+const FanDriverProfile = require('../models/FanDriverProfile');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { getIO } = require('../config/socket');
 
@@ -576,5 +577,98 @@ exports.adminDeleteQuote = async (req, res) => {
 
   } catch (err) {
     return serverError(res, err, 'Delete quote failed');
+  }
+};
+
+
+/* ── DRIVER PROFILE OVERRIDES ── */
+function makeDriverKey(name = '', code = '') {
+  return String(code || name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+exports.getDriverProfiles = async (req, res) => {
+  try {
+    const profiles = await FanDriverProfile.find({ isActive:true }).sort({ name: 1 });
+    return successResponse(res, 200, 'Driver profiles fetched', { profiles });
+  } catch (err) {
+    return serverError(res, err, 'Get driver profiles failed');
+  }
+};
+
+exports.adminGetDriverProfiles = async (req, res) => {
+  try {
+    const profiles = await FanDriverProfile.find().sort({ updatedAt: -1 }).limit(300);
+    return successResponse(res, 200, 'Admin driver profiles fetched', { profiles });
+  } catch (err) {
+    return serverError(res, err, 'Admin get driver profiles failed');
+  }
+};
+
+exports.adminCreateDriverProfile = async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim();
+    const code = String(req.body.code || '').trim().toUpperCase();
+
+    if (!name) return errorResponse(res, 400, 'Driver name required');
+
+    const driverKey = makeDriverKey(req.body.driverKey || name, code);
+
+    const profile = await FanDriverProfile.findOneAndUpdate(
+      { driverKey },
+      {
+        driverKey,
+        code,
+        name,
+        team: String(req.body.team || '').trim(),
+        country: String(req.body.country || '').trim(),
+        flagEmoji: String(req.body.flagEmoji || '').trim(),
+        image: String(req.body.image || '').trim(),
+        isActive: req.body.isActive !== false
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
+
+    return successResponse(res, 201, 'Driver profile saved', { profile });
+  } catch (err) {
+    return serverError(res, err, 'Create driver profile failed');
+  }
+};
+
+exports.adminUpdateDriverProfile = async (req, res) => {
+  try {
+    const allowed = ['code','name','team','country','flagEmoji','image','isActive'];
+    const payload = {};
+
+    allowed.forEach(key => {
+      if (req.body[key] !== undefined) payload[key] = req.body[key];
+    });
+
+    if (payload.code) payload.code = String(payload.code).trim().toUpperCase();
+
+    const profile = await FanDriverProfile.findByIdAndUpdate(
+      req.params.id,
+      payload,
+      { new: true, runValidators: true }
+    );
+
+    if (!profile) return errorResponse(res, 404, 'Driver profile not found');
+
+    return successResponse(res, 200, 'Driver profile updated', { profile });
+  } catch (err) {
+    return serverError(res, err, 'Update driver profile failed');
+  }
+};
+
+exports.adminDeleteDriverProfile = async (req, res) => {
+  try {
+    const profile = await FanDriverProfile.findByIdAndDelete(req.params.id);
+    if (!profile) return errorResponse(res, 404, 'Driver profile not found');
+    return successResponse(res, 200, 'Driver profile deleted');
+  } catch (err) {
+    return serverError(res, err, 'Delete driver profile failed');
   }
 };

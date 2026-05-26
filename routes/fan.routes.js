@@ -16,6 +16,12 @@ router.get('/feed',           fan.getFeed);
 router.post('/feed',          protect, fan.postToFeed);
 
 router.get('/quotes', fan.getQuotes);
+router.get('/driver-profiles', fan.getDriverProfiles);
+
+router.get('/admin/driver-profiles', protect, adminOnly, fan.adminGetDriverProfiles);
+router.post('/admin/driver-profiles', protect, adminOnly, fan.adminCreateDriverProfile);
+router.put('/admin/driver-profiles/:id', protect, adminOnly, fan.adminUpdateDriverProfile);
+router.delete('/admin/driver-profiles/:id', protect, adminOnly, fan.adminDeleteDriverProfile);
 
 router.get('/admin/quotes', protect, adminOnly, fan.adminGetQuotes);
 router.post('/admin/quotes', protect, adminOnly, fan.adminCreateQuote);
