@@ -9,6 +9,7 @@ const FanPoints  = require('../models/FanPoints');
 const User       = require('../models/User');
 const Quote      = require('../models/Quote');
 const FanDriverProfile = require('../models/FanDriverProfile');
+const HomeMarqueeLogo = require('../models/HomeMarqueeLogo');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { getIO } = require('../config/socket');
 
@@ -670,5 +671,134 @@ exports.adminDeleteDriverProfile = async (req, res) => {
     return successResponse(res, 200, 'Driver profile deleted');
   } catch (err) {
     return serverError(res, err, 'Delete driver profile failed');
+  }
+};
+
+
+/* ── HOME MARQUEE LOGOS ── */
+function homeLogoSlug(name = '') {
+  return String(name || 'logo')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '') || 'logo';
+}
+
+function publicHomeLogo(item) {
+  const obj = item.toObject ? item.toObject() : item;
+  return {
+    _id: obj._id,
+    name: obj.name,
+    slug: obj.slug,
+    image: obj.image,
+    color: obj.color,
+    order: obj.order,
+    isActive: obj.isActive
+  };
+}
+
+exports.getHomeMarqueeLogos = async (req, res) => {
+  try {
+    const logos = await HomeMarqueeLogo.find({ isActive: true })
+      .sort({ order: 1, createdAt: 1 })
+      .limit(40);
+
+    return successResponse(res, 200, 'Home marquee logos fetched', {
+      logos: logos.map(publicHomeLogo)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Get home marquee logos failed');
+  }
+};
+
+exports.adminGetHomeMarqueeLogos = async (req, res) => {
+  try {
+    const logos = await HomeMarqueeLogo.find({})
+      .sort({ order: 1, createdAt: 1 })
+      .limit(80);
+
+    return successResponse(res, 200, 'Admin home marquee logos fetched', {
+      logos: logos.map(publicHomeLogo)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin get home marquee logos failed');
+  }
+};
+
+exports.adminCreateHomeMarqueeLogo = async (req, res) => {
+  try {
+    const { name, image, color = '#e8002d', order = 0, isActive = true } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return errorResponse(res, 400, 'Logo name required');
+    }
+
+    if (!image || !String(image).startsWith('data:image/')) {
+      return errorResponse(res, 400, 'Cropped logo image required');
+    }
+
+    const logo = await HomeMarqueeLogo.create({
+      name: String(name).trim(),
+      slug: homeLogoSlug(name),
+      image,
+      color: String(color || '#e8002d').trim(),
+      order: Number(order || 0),
+      isActive: isActive !== false,
+      createdBy: req.user?._id
+    });
+
+    return successResponse(res, 201, 'Home marquee logo created', {
+      logo: publicHomeLogo(logo)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Create home marquee logo failed');
+  }
+};
+
+exports.adminUpdateHomeMarqueeLogo = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, image, color, order, isActive } = req.body || {};
+
+    const update = {};
+    if (name !== undefined) {
+      update.name = String(name).trim();
+      update.slug = homeLogoSlug(name);
+    }
+    if (image !== undefined) {
+      if (!String(image).startsWith('data:image/')) {
+        return errorResponse(res, 400, 'Valid cropped logo image required');
+      }
+      update.image = image;
+    }
+    if (color !== undefined) update.color = String(color || '#e8002d').trim();
+    if (order !== undefined) update.order = Number(order || 0);
+    if (isActive !== undefined) update.isActive = !!isActive;
+
+    const logo = await HomeMarqueeLogo.findByIdAndUpdate(id, update, {
+      new: true,
+      runValidators: true
+    });
+
+    if (!logo) return errorResponse(res, 404, 'Marquee logo not found');
+
+    return successResponse(res, 200, 'Home marquee logo updated', {
+      logo: publicHomeLogo(logo)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Update home marquee logo failed');
+  }
+};
+
+exports.adminDeleteHomeMarqueeLogo = async (req, res) => {
+  try {
+    const logo = await HomeMarqueeLogo.findByIdAndDelete(req.params.id);
+    if (!logo) return errorResponse(res, 404, 'Marquee logo not found');
+
+    return successResponse(res, 200, 'Home marquee logo deleted', {
+      deletedId: req.params.id
+    });
+  } catch (err) {
+    return serverError(res, err, 'Delete home marquee logo failed');
   }
 };

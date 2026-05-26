@@ -17,6 +17,12 @@ router.post('/feed',          protect, fan.postToFeed);
 
 router.get('/quotes', fan.getQuotes);
 router.get('/driver-profiles', fan.getDriverProfiles);
+router.get('/home-marquee-logos', fan.getHomeMarqueeLogos);
+
+router.get('/admin/home-marquee-logos', protect, adminOnly, fan.adminGetHomeMarqueeLogos);
+router.post('/admin/home-marquee-logos', protect, adminOnly, fan.adminCreateHomeMarqueeLogo);
+router.put('/admin/home-marquee-logos/:id', protect, adminOnly, fan.adminUpdateHomeMarqueeLogo);
+router.delete('/admin/home-marquee-logos/:id', protect, adminOnly, fan.adminDeleteHomeMarqueeLogo);
 
 router.get('/admin/driver-profiles', protect, adminOnly, fan.adminGetDriverProfiles);
 router.post('/admin/driver-profiles', protect, adminOnly, fan.adminCreateDriverProfile);
