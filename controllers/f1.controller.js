@@ -28,9 +28,20 @@ const CACHE_TTL = {
 const withCache = async (key, fetcher, ttl = 5 * 60 * 1000) => {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.ts < ttl) return cached.data;
-  const data = await fetcher();
-  cache.set(key, { data, ts: Date.now() });
-  return data;
+  try {
+    const data = await fetcher();
+    cache.set(key, { data, ts: Date.now() });
+    return data;
+  } catch (err) {
+    if (cached?.data) {
+      return {
+        ...cached.data,
+        stale: true,
+        staleReason: err.message || 'Fresh fetch failed; served last cached response'
+      };
+    }
+    throw err;
+  }
 };
 
 /* ── GET NEXT RACE + COUNTDOWN ── */
@@ -413,17 +424,39 @@ function queryString(params = {}) {
   return q.toString();
 }
 
+function wait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function openF1(endpoint, params = {}) {
   const headers = { Accept: 'application/json' };
   const token = process.env.OPENF1_API_KEY || process.env.OPENF1_TOKEN || '';
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const response = await axios.get(`${OPENF1_BASE}/${endpoint}`, {
-    params,
-    timeout: 15000,
-    headers
-  });
-  return response.data;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await axios.get(`${OPENF1_BASE}/${endpoint}`, {
+        params,
+        timeout: 20000,
+        headers,
+        validateStatus: status => status >= 200 && status < 500
+      });
+      if (response.status >= 400) {
+        const e = new Error(`OpenF1 ${endpoint} returned ${response.status}`);
+        e.status = response.status;
+        throw e;
+      }
+      return response.data;
+    } catch (err) {
+      lastErr = err;
+      const status = err.response?.status || err.status;
+      const retryable = !status || status >= 500 || ['ECONNRESET','ETIMEDOUT','ECONNABORTED'].includes(err.code);
+      if (!retryable || attempt === 2) break;
+      await wait(700 * (attempt + 1));
+    }
+  }
+  throw lastErr;
 }
 
 async function openF1LatestSessionForYear(year) {
