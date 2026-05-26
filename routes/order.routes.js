@@ -23,6 +23,7 @@ router.get('/', order.getMyOrders);
 /* Admin order routes must come before /:id */
 router.get('/admin/all', adminOnly, order.getAllOrders);
 router.put('/admin/:id/status', adminOnly, order.updateOrderStatus);
+router.delete('/admin/:id', adminOnly, order.deleteOrder);
 
 /* Dynamic user routes */
 router.get('/:id', order.getOrder);

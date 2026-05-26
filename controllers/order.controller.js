@@ -483,3 +483,42 @@ exports.updateOrderStatus = async (req, res) => {
     return serverError(res, err, 'Update order status failed');
   }
 };
+
+
+/* ── ADMIN: DELETE ORDER PERMANENTLY ── */
+exports.deleteOrder = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id);
+
+    if (!order) {
+      return errorResponse(res, 404, 'Order not found');
+    }
+
+    const deletedOrder = {
+      _id: order._id,
+      orderNumber: order.orderNumber,
+      total: order.pricing?.total || 0
+    };
+
+    await Order.findByIdAndDelete(req.params.id);
+
+    try {
+      getIO().emit('order:deleted', {
+        orderId: String(deletedOrder._id),
+        orderNumber: deletedOrder.orderNumber
+      });
+    } catch (err) {
+      console.warn('Socket delete notification failed:', err.message);
+    }
+
+    return successResponse(
+      res,
+      200,
+      'Order deleted permanently',
+      { order: deletedOrder }
+    );
+
+  } catch (err) {
+    return serverError(res, err, 'Delete order failed');
+  }
+};
