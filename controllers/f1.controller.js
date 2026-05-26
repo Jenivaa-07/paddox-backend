@@ -9,8 +9,11 @@ const {
   getRaceResults, getNextRace, getLastResult,
   getDrivers, getQualifying, getCurrentYear,
 } = require('../utils/f1Api');
+const axios = require('axios');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { getIO } = require('../config/socket');
+let FanDriverProfile = null;
+try { FanDriverProfile = require('../models/FanDriverProfile'); } catch (_) { FanDriverProfile = null; }
 
 /* ── In-memory cache (reduces API calls) ── */
 const cache = new Map();
@@ -384,3 +387,325 @@ function getTeamEmoji(teamId) {
   };
   return emojis[teamId] || '🏎️';
 }
+
+/* ══════════════════════════════════════
+   PIT WALL REAL SESSION DATA
+   Practice 1/2/3, Qualifying, Sprint Qualifying, Sprint Race, Race
+   Uses backend proxy to avoid browser CORS/connection issues.
+══════════════════════════════════════ */
+
+const OPENF1_BASE = 'https://api.openf1.org/v1';
+const PIT_SESSION_ALIASES = {
+  FP1: ['Practice 1'],
+  FP2: ['Practice 2'],
+  FP3: ['Practice 3'],
+  Qualifying: ['Qualifying'],
+  'Sprint Qualifying': ['Sprint Qualifying', 'Sprint Shootout'],
+  Sprint: ['Sprint'],
+  Race: ['Race']
+};
+
+function queryString(params = {}) {
+  const q = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') q.append(k, v);
+  });
+  return q.toString();
+}
+
+async function openF1(endpoint, params = {}) {
+  const response = await axios.get(`${OPENF1_BASE}/${endpoint}`, {
+    params,
+    timeout: 12000,
+    headers: { Accept: 'application/json' }
+  });
+  return response.data;
+}
+
+function asDate(date, time = '13:00:00Z') {
+  if (!date) return null;
+  const t = String(time || '13:00:00Z');
+  return new Date(`${date}T${t}`);
+}
+
+async function getScheduleRace(year, round) {
+  const r = await getSchedule(year);
+  const races = r.data?.MRData?.RaceTable?.Races || [];
+  const race = races.find(x => Number(x.round) === Number(round)) || races[0];
+  return { races, race };
+}
+
+async function findMeetingForRound(year, round) {
+  const { race } = await getScheduleRace(year, round);
+  if (!race) return { meeting: null, race: null };
+
+  const meetings = await openF1('meetings', { year }).catch(() => []);
+  const raceDate = asDate(race.date, race.time || '13:00:00Z');
+  const raceCountry = String(race.Circuit?.Location?.country || '').toLowerCase();
+  const raceLocality = String(race.Circuit?.Location?.locality || '').toLowerCase();
+  const raceName = String(race.raceName || '').toLowerCase();
+
+  let meeting = (meetings || []).find(m => {
+    if (!m.date_start || !raceDate) return false;
+    const start = new Date(m.date_start);
+    const diffDays = (raceDate - start) / 86400000;
+    return diffDays >= 0 && diffDays <= 7;
+  });
+
+  if (!meeting) {
+    meeting = (meetings || []).find(m => {
+      const hay = `${m.meeting_name || ''} ${m.country_name || ''} ${m.location || ''} ${m.circuit_short_name || ''}`.toLowerCase();
+      return (raceCountry && hay.includes(raceCountry)) || (raceLocality && hay.includes(raceLocality)) ||
+             (raceName && raceName.split(' ').some(w => w.length > 4 && hay.includes(w)));
+    });
+  }
+
+  return { meeting: meeting || null, race };
+}
+
+async function findSession(year, round, sessionKey) {
+  const { meeting, race } = await findMeetingForRound(year, round);
+  if (!meeting) return { openSession: null, race, meeting: null };
+
+  const sessions = await openF1('sessions', { meeting_key: meeting.meeting_key }).catch(() => []);
+  const aliases = PIT_SESSION_ALIASES[sessionKey] || [sessionKey];
+  const openSession = (sessions || []).find(s =>
+    aliases.some(a => String(s.session_name || '').toLowerCase() === String(a).toLowerCase())
+  );
+  return { openSession: openSession || null, race, meeting, allOpenSessions: sessions || [] };
+}
+
+function pitSessionFromRace(race) {
+  const sessions = [];
+  const push = (key, label, obj) => {
+    if (!obj) return;
+    const date = obj.date ? `${obj.date}T${obj.time || '13:00:00Z'}` : '';
+    sessions.push({ key, label, date, available: true });
+  };
+  push('FP1', 'Practice 1', race.FirstPractice);
+  push('FP2', 'Practice 2', race.SecondPractice);
+  push('FP3', 'Practice 3', race.ThirdPractice);
+  push('Sprint Qualifying', 'Sprint Qualifying', race.SprintQualifying || race.SprintShootout);
+  push('Sprint', 'Sprint Race', race.Sprint);
+  push('Qualifying', 'Qualifying', race.Qualifying);
+  push('Race', 'Race', { date: race.date, time: race.time });
+  return sessions;
+}
+
+function tyreCode(raw = '') {
+  const map = { SOFT: 'S', MEDIUM: 'M', HARD: 'H', INTERMEDIATE: 'I', WET: 'W' };
+  return map[String(raw || '').toUpperCase()] || String(raw || '').slice(0, 1).toUpperCase() || '';
+}
+
+function secToLap(s) {
+  const n = Number(s || 0);
+  if (!n) return '—';
+  const m = Math.floor(n / 60);
+  const r = (n % 60).toFixed(3).padStart(6, '0');
+  return m > 0 ? `${m}:${r}` : r;
+}
+
+function latestByDriver(list, key = 'driver_number') {
+  const map = new Map();
+  for (const item of list || []) {
+    const id = item[key];
+    if (!id) continue;
+    const old = map.get(id);
+    const itemDate = new Date(item.date || item.date_start || item.timestamp || 0).getTime();
+    const oldDate = old ? new Date(old.date || old.date_start || old.timestamp || 0).getTime() : -1;
+    if (!old || itemDate >= oldDate) map.set(id, item);
+  }
+  return map;
+}
+
+function normalizeCode(name = '') {
+  return String(name || '').split(' ').filter(Boolean).map(x => x[0]).join('').slice(0, 3).toUpperCase();
+}
+
+async function getProfileImageMap() {
+  const map = new Map();
+  if (!FanDriverProfile) return map;
+  try {
+    const profiles = await FanDriverProfile.find({ isActive: true }).lean();
+    for (const p of profiles || []) {
+      if (!p.image) continue;
+      const keys = [p.code, p.name, p.driverKey].filter(Boolean);
+      for (const k of keys) map.set(String(k).trim().toLowerCase(), p.image);
+    }
+  } catch (_) {}
+  return map;
+}
+
+function imageForDriver(d, profileMap) {
+  const full = d.full_name || d.broadcast_name || '';
+  const code = d.name_acronym || normalizeCode(full);
+  return profileMap.get(String(code).toLowerCase()) ||
+         profileMap.get(String(full).toLowerCase()) ||
+         d.headshot_url || '';
+}
+
+function flagFromCountryCode(code = '') {
+  const c = String(code || '').trim().toUpperCase();
+  if (c.length !== 2) return '';
+  return c.replace(/./g, ch => String.fromCodePoint(127397 + ch.charCodeAt(0)));
+}
+
+exports.getPitWallWeekend = async (req, res, next) => {
+  try {
+    const year = Number(req.query.year || getCurrentYear());
+    const round = Number(req.query.round || 1);
+    const data = await withCache(`pit_weekend_${year}_${round}`, async () => {
+      const { race } = await getScheduleRace(year, round);
+      if (!race) return { race: null, sessions: [], defaultSession: 'Race' };
+      let sessions = pitSessionFromRace(race);
+
+      try {
+        const { allOpenSessions } = await findSession(year, round, 'Race');
+        const openNames = new Set((allOpenSessions || []).map(s => String(s.session_name || '').toLowerCase()));
+        sessions = sessions.map(s => {
+          const aliases = PIT_SESSION_ALIASES[s.key] || [s.key];
+          const openMatch = aliases.some(a => openNames.has(String(a).toLowerCase()));
+          return { ...s, openF1: openMatch, status: s.date && new Date(s.date) < new Date() ? 'Done' : 'Next' };
+        });
+      } catch (_) {}
+
+      const now = new Date();
+      const defaultSession = [...sessions].reverse().find(s => s.date && new Date(s.date) <= now)?.key ||
+                             sessions.find(s => s.key === 'Race')?.key || sessions[0]?.key || 'Race';
+      return {
+        race: {
+          round: Number(race.round), name: race.raceName, date: race.date, time: race.time,
+          circuit: race.Circuit?.circuitName,
+          location: race.Circuit?.Location?.locality,
+          country: race.Circuit?.Location?.country,
+          flag: getFlagEmoji(race.Circuit?.Location?.country)
+        },
+        sessions,
+        defaultSession
+      };
+    }, CACHE_TTL.schedule);
+    successResponse(res, 200, 'Pit Wall weekend fetched', data);
+  } catch (err) { next(err); }
+};
+
+exports.getPitWallSession = async (req, res, next) => {
+  try {
+    const year = Number(req.query.year || getCurrentYear());
+    const round = Number(req.query.round || 1);
+    const sessionKey = req.query.session || 'Race';
+
+    const data = await withCache(`pit_session_${year}_${round}_${sessionKey}`, async () => {
+      const { openSession, race, meeting } = await findSession(year, round, sessionKey);
+      if (!openSession) {
+        return {
+          year, round, session: sessionKey, race, source: 'Session not available in OpenF1 yet',
+          live: false, rows: [], weather: null, raceControl: [], fetchedAt: new Date().toISOString()
+        };
+      }
+
+      const session_key = openSession.session_key;
+      const [drivers, laps, stints, positions, intervals, weather, raceControl] = await Promise.all([
+        openF1('drivers', { session_key }).catch(() => []),
+        openF1('laps', { session_key }).catch(() => []),
+        openF1('stints', { session_key }).catch(() => []),
+        openF1('position', { session_key }).catch(() => []),
+        openF1('intervals', { session_key }).catch(() => []),
+        openF1('weather', { session_key }).catch(() => []),
+        openF1('race_control', { session_key }).catch(() => []),
+      ]);
+
+      const profileMap = await getProfileImageMap();
+      const posMap = latestByDriver(positions);
+      const intMap = latestByDriver(intervals);
+      const lastLapMap = new Map();
+      const bestLapMap = new Map();
+      const lapCountMap = new Map();
+      for (const lap of laps || []) {
+        const num = lap.driver_number;
+        if (!num) continue;
+        if (lap.lap_duration && !lap.is_pit_out_lap) {
+          lapCountMap.set(num, (lapCountMap.get(num) || 0) + 1);
+          const best = bestLapMap.get(num);
+          if (!best || Number(lap.lap_duration) < Number(best.lap_duration || 99999)) bestLapMap.set(num, lap);
+        }
+        const last = lastLapMap.get(num);
+        if (!last || Number(lap.lap_number || 0) >= Number(last.lap_number || 0)) lastLapMap.set(num, lap);
+      }
+
+      const stintMap = new Map();
+      for (const st of stints || []) {
+        const num = st.driver_number;
+        if (!num) continue;
+        if (!stintMap.has(num)) stintMap.set(num, []);
+        stintMap.get(num).push(st);
+      }
+
+      function currentStint(num) {
+        const list = (stintMap.get(num) || []).sort((a, b) => Number(a.lap_start || 0) - Number(b.lap_start || 0));
+        const lastLap = lastLapMap.get(num);
+        const lapNo = Number(lastLap?.lap_number || 0);
+        let st = list.find(x => lapNo >= Number(x.lap_start || 0) && lapNo <= Number(x.lap_end || 9999)) || list[list.length - 1];
+        if (!st) return { tyre: '', age: null, stint: null };
+        const age = lapNo ? Math.max(0, lapNo - Number(st.lap_start || 1) + 1 + Number(st.tyre_age_at_start || 0)) : null;
+        return { tyre: tyreCode(st.compound), age, stint: st.stint_number || null };
+      }
+
+      const rows = (drivers || []).map((d, index) => {
+        const num = d.driver_number;
+        const best = bestLapMap.get(num);
+        const last = lastLapMap.get(num);
+        const pos = posMap.get(num);
+        const intr = intMap.get(num);
+        const st = currentStint(num);
+        const fullName = d.full_name || d.broadcast_name || `${d.first_name || ''} ${d.last_name || ''}`.trim();
+        return {
+          driverNumber: num,
+          position: Number(pos?.position || index + 1),
+          code: d.name_acronym || normalizeCode(fullName),
+          name: fullName,
+          firstName: d.first_name || '',
+          lastName: d.last_name || '',
+          team: d.team_name || '',
+          teamColor: d.team_colour ? `#${String(d.team_colour).replace('#','')}` : getTeamColor(String(d.team_name || '').toLowerCase().replaceAll(' ', '_')),
+          flag: flagFromCountryCode(d.country_code),
+          image: imageForDriver(d, profileMap),
+          gap: intr?.gap_to_leader || intr?.interval || (Number(pos?.position) === 1 ? 'LEADER' : '—'),
+          bestSec: best?.lap_duration || null,
+          bestLap: best?.lap_duration ? secToLap(best.lap_duration) : '—',
+          lastSec: last?.lap_duration || null,
+          lastLap: last?.lap_duration ? secToLap(last.lap_duration) : '—',
+          s1: best?.duration_sector_1 ? Number(best.duration_sector_1).toFixed(3) : '—',
+          s2: best?.duration_sector_2 ? Number(best.duration_sector_2).toFixed(3) : '—',
+          s3: best?.duration_sector_3 ? Number(best.duration_sector_3).toFixed(3) : '—',
+          laps: lapCountMap.get(num) || 0,
+          tyre: st.tyre,
+          tyreAge: st.age,
+          stint: st.stint,
+        };
+      }).sort((a, b) => Number(a.position || 999) - Number(b.position || 999));
+
+      const w = (weather || [])[weather.length - 1] || null;
+      return {
+        year, round, session: sessionKey,
+        openF1: { meeting_key: meeting?.meeting_key, session_key, session_name: openSession.session_name },
+        race: race ? { name: race.raceName, round: race.round, circuit: race.Circuit?.circuitName, country: race.Circuit?.Location?.country } : null,
+        source: 'OpenF1 via PADDOX backend proxy',
+        live: String(openSession.session_name || '').toLowerCase() === String(sessionKey || '').toLowerCase(),
+        rows,
+        weather: w ? {
+          airTemp: w.air_temperature,
+          trackTemp: w.track_temperature,
+          humidity: w.humidity,
+          rainfall: w.rainfall,
+          windSpeed: w.wind_speed,
+          summary: `Air ${Math.round(w.air_temperature || 0)}°C · Track ${Math.round(w.track_temperature || 0)}°C · Humidity ${Math.round(w.humidity || 0)}%`
+        } : null,
+        raceControl: (raceControl || []).slice(-12),
+        fetchedAt: new Date().toISOString()
+      };
+    }, CACHE_TTL.live);
+
+    try { getIO().to('race:live').emit('race:session-update', data); } catch {}
+    successResponse(res, 200, 'Pit Wall session fetched', data);
+  } catch (err) { next(err); }
+};

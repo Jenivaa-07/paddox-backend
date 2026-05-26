@@ -18,6 +18,8 @@ router.get('/last-result',            f1.getLastResult);
 router.get('/drivers/all',            f1.getAllDrivers);
 router.get('/sessions',               f1.getSessions);
 router.get('/live',                   f1.getLiveSession);
+router.get('/pitwall/weekend',        f1.getPitWallWeekend);
+router.get('/pitwall/session',        f1.getPitWallSession);
 router.post('/cache/clear',           protect, adminOnly, f1.clearCache);
 
 module.exports = router;
