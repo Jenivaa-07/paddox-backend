@@ -728,8 +728,8 @@ exports.getPitWallWeekend = async (req, res, next) => {
         sessions,
         defaultSession,
         dataNote: process.env.OPENF1_API_KEY || process.env.OPENF1_TOKEN
-          ? 'OpenF1 token detected: live/authenticated data enabled when available.'
-          : 'No OpenF1 token configured: historical/free data only. Live real-time sessions may require OPENF1_API_KEY.'
+          ? 'Live session data enabled when available.'
+          : 'Session timing will appear when available.'
       };
     }, CACHE_TTL.live);
     successResponse(res, 200, 'Pit Wall weekend fetched', data);
@@ -751,7 +751,7 @@ exports.getPitWallSession = async (req, res, next) => {
       const { openSession, race, meeting } = await findSession(year, round, sessionKey);
       if (!openSession) {
         return {
-          year, round, session: sessionKey, race, source: 'Session not available in OpenF1 yet',
+          year, round, session: sessionKey, race, source: 'Session not available yet',
           live: false, rows: [], weather: null, raceControl: [], fetchedAt: new Date().toISOString()
         };
       }
@@ -775,8 +775,8 @@ exports.getPitWallSession = async (req, res, next) => {
           openF1: { meeting_key: meeting?.meeting_key, session_key, session_name: openSession.session_name },
           race: race ? { name: race.raceName, round: race.round, circuit: race.Circuit?.circuitName, country: race.Circuit?.Location?.country } : null,
           source: process.env.OPENF1_API_KEY || process.env.OPENF1_TOKEN
-            ? 'OpenF1 via PADDOX backend proxy'
-            : 'OpenF1 historical/free mode via PADDOX backend proxy',
+            ? 'Session data service'
+            : 'Session data service',
           dataQuality: 'NO_TIMING_DATA',
           live: false,
           rows: [],
@@ -790,7 +790,7 @@ exports.getPitWallSession = async (req, res, next) => {
             summary: `Air ${Math.round(w.air_temperature || 0)}°C · Track ${Math.round(w.track_temperature || 0)}°C · Humidity ${Math.round(w.humidity || 0)}%`
           } : null,
           raceControl: (raceControl || []).slice(-12),
-          message: 'OpenF1 returned no lap, interval or tyre stint records for this session yet. No fallback timing rows were generated.',
+          message: 'Timing data is not available for this session yet.',
           fetchedAt: new Date().toISOString()
         };
       }
@@ -870,7 +870,7 @@ exports.getPitWallSession = async (req, res, next) => {
         year, round, session: sessionKey,
         openF1: { meeting_key: meeting?.meeting_key, session_key, session_name: openSession.session_name },
         race: race ? { name: race.raceName, round: race.round, circuit: race.Circuit?.circuitName, country: race.Circuit?.Location?.country } : null,
-        source: process.env.OPENF1_API_KEY || process.env.OPENF1_TOKEN ? 'OpenF1 live/auth proxy' : 'OpenF1 historical/free proxy',
+        source: process.env.OPENF1_API_KEY || process.env.OPENF1_TOKEN ? 'Session data service' : 'Session data service',
         dataQuality: 'REAL_TIMING_DATA',
         live: true,
         rows,
