@@ -33,7 +33,8 @@ const quoteSchema = new mongoose.Schema({
   },
   avatar: {
     type: String,
-    default: '🏎️'
+    default: '🏎️',
+    maxlength: 300000
   },
   source: {
     type: String,
