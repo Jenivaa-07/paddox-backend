@@ -33,6 +33,12 @@ router.delete('/admin/polls/:id', protect, adminOnly, fan.adminDeletePoll);
 router.put('/admin/polls/:id/active', protect, adminOnly, fan.adminSetActivePoll);
 router.patch('/admin/polls/:id/active', protect, adminOnly, fan.adminSetActivePoll);
 
+/* Admin: Trivia */
+router.get('/admin/trivia', protect, adminOnly, fan.adminGetTrivia);
+router.post('/admin/trivia', protect, adminOnly, fan.adminCreateTrivia);
+router.put('/admin/trivia/:id', protect, adminOnly, fan.adminUpdateTrivia);
+router.delete('/admin/trivia/:id', protect, adminOnly, fan.adminDeleteTrivia);
+
 /* Admin: Home Marquee Logos */
 router.get('/admin/home-marquee-logos', protect, adminOnly, fan.adminGetHomeMarqueeLogos);
 router.post('/admin/home-marquee-logos', protect, adminOnly, fan.adminCreateHomeMarqueeLogo);

@@ -828,6 +828,151 @@ exports.adminDeletePoll = async (req, res) => {
   }
 };
 
+
+/* ── ADMIN TRIVIA HELPERS ── */
+function publicTrivia(trivia) {
+  const obj = trivia?.toObject ? trivia.toObject() : (trivia || {});
+  return {
+    ...obj,
+    options: Array.isArray(obj.options) ? obj.options : [],
+    correctIndex: Number(obj.correctIndex || 0),
+    points: Number(obj.points || 100),
+    difficulty: obj.difficulty || 'medium',
+    category: obj.category || 'drivers',
+    isActive: obj.isActive !== false
+  };
+}
+
+function normalizeTriviaPayload(body = {}) {
+  const question = String(body.question || '').trim();
+  const options = Array.isArray(body.options)
+    ? body.options.map(option => String(option || '').trim()).slice(0, 4)
+    : [];
+  const correctIndex = Number(body.correctIndex);
+  const difficulty = ['easy', 'medium', 'hard'].includes(String(body.difficulty || '').toLowerCase())
+    ? String(body.difficulty).toLowerCase()
+    : 'medium';
+  const category = ['history', 'drivers', 'teams', 'circuits', 'rules'].includes(String(body.category || '').toLowerCase())
+    ? String(body.category).toLowerCase()
+    : 'drivers';
+  const rawPoints = Number(body.points);
+  const points = Number.isFinite(rawPoints)
+    ? Math.max(10, Math.min(500, Math.round(rawPoints)))
+    : 100;
+
+  if (!question) return { error: 'Trivia question required' };
+  if (options.length !== 4 || options.some(option => !option)) {
+    return { error: 'Exactly 4 answer options are required' };
+  }
+  if (!Number.isInteger(correctIndex) || correctIndex < 0 || correctIndex > 3) {
+    return { error: 'Correct answer must be between option 1 and 4' };
+  }
+
+  return {
+    question,
+    options,
+    correctIndex,
+    difficulty,
+    category,
+    points,
+    isActive: body.isActive !== false
+  };
+}
+
+/* ── ADMIN GET ALL TRIVIA ── */
+exports.adminGetTrivia = async (req, res) => {
+  try {
+    const trivia = await Trivia.find()
+      .sort({ isActive: -1, createdAt: -1 })
+      .limit(300);
+
+    return successResponse(res, 200, 'Admin trivia fetched', {
+      trivia: trivia.map(publicTrivia)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin get trivia failed');
+  }
+};
+
+/* ── ADMIN CREATE TRIVIA ── */
+exports.adminCreateTrivia = async (req, res) => {
+  try {
+    const payload = normalizeTriviaPayload(req.body);
+    if (payload.error) return errorResponse(res, 400, payload.error);
+
+    const trivia = await Trivia.create({
+      ...payload,
+      createdBy: req.user?._id
+    });
+
+    try { getIO().emit('trivia:changed', { trivia: publicTrivia(trivia) }); } catch {}
+
+    return successResponse(res, 201, 'Trivia created', {
+      trivia: publicTrivia(trivia)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Create trivia failed');
+  }
+};
+
+/* ── ADMIN UPDATE TRIVIA ── */
+exports.adminUpdateTrivia = async (req, res) => {
+  try {
+    const trivia = await Trivia.findById(req.params.id);
+    if (!trivia) return errorResponse(res, 404, 'Trivia not found');
+
+    const shouldValidateFull =
+      req.body.question !== undefined ||
+      req.body.options !== undefined ||
+      req.body.correctIndex !== undefined ||
+      req.body.difficulty !== undefined ||
+      req.body.category !== undefined ||
+      req.body.points !== undefined;
+
+    if (shouldValidateFull) {
+      const payload = normalizeTriviaPayload({
+        question: req.body.question !== undefined ? req.body.question : trivia.question,
+        options: req.body.options !== undefined ? req.body.options : trivia.options,
+        correctIndex: req.body.correctIndex !== undefined ? req.body.correctIndex : trivia.correctIndex,
+        difficulty: req.body.difficulty !== undefined ? req.body.difficulty : trivia.difficulty,
+        category: req.body.category !== undefined ? req.body.category : trivia.category,
+        points: req.body.points !== undefined ? req.body.points : trivia.points,
+        isActive: req.body.isActive !== undefined ? req.body.isActive : trivia.isActive
+      });
+      if (payload.error) return errorResponse(res, 400, payload.error);
+      Object.assign(trivia, payload);
+    } else if (req.body.isActive !== undefined) {
+      trivia.isActive = !!req.body.isActive;
+    }
+
+    await trivia.save();
+
+    try { getIO().emit('trivia:changed', { trivia: publicTrivia(trivia) }); } catch {}
+
+    return successResponse(res, 200, 'Trivia updated', {
+      trivia: publicTrivia(trivia)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Update trivia failed');
+  }
+};
+
+/* ── ADMIN DELETE TRIVIA ── */
+exports.adminDeleteTrivia = async (req, res) => {
+  try {
+    const trivia = await Trivia.findByIdAndDelete(req.params.id);
+    if (!trivia) return errorResponse(res, 404, 'Trivia not found');
+
+    try { getIO().emit('trivia:changed', { deletedId: req.params.id }); } catch {}
+
+    return successResponse(res, 200, 'Trivia deleted', {
+      deletedId: req.params.id
+    });
+  } catch (err) {
+    return serverError(res, err, 'Delete trivia failed');
+  }
+};
+
 /* ── DEFAULT QUOTES SEED ── */
 async function ensureDefaultQuotes() {
   const count = await Quote.countDocuments();
