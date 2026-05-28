@@ -26,6 +26,60 @@ function publicPost(post) {
   return obj;
 }
 
+function publicFanPost(post, viewerId = null) {
+  const obj = post?.toObject ? post.toObject() : (post || {});
+  const likedBy = Array.isArray(obj.likedBy) ? obj.likedBy : [];
+  const legacyLikes = Number(obj.likes || 0);
+  const likesCount = likedBy.length || legacyLikes || 0;
+  const viewer = viewerId ? String(viewerId) : '';
+
+  const comments = Array.isArray(obj.comments) ? obj.comments : [];
+  const cleanComments = comments
+    .slice(-8)
+    .map(comment => ({
+      _id: comment._id,
+      text: comment.text,
+      createdAt: comment.createdAt,
+      user: comment.user
+    }));
+
+  return {
+    ...obj,
+    likesCount,
+    commentsCount: comments.length,
+    likedByCurrentUser: viewer
+      ? likedBy.some(id => String(id?._id || id) === viewer)
+      : false,
+    comments: cleanComments
+  };
+}
+
+
+function pollResultPayload(poll) {
+  const obj = poll?.toObject ? poll.toObject() : (poll || {});
+  const options = Array.isArray(obj.options) ? obj.options : [];
+  const totalVotes = options.reduce((sum, option) => sum + Number(option.votes || 0), 0);
+
+  return {
+    poll: {
+      ...obj,
+      options: options.map(option => ({
+        ...option,
+        percentage: totalVotes > 0
+          ? Math.round((Number(option.votes || 0) / totalVotes) * 100)
+          : 0
+      }))
+    },
+    options: options.map(option => ({
+      ...option,
+      percentage: totalVotes > 0
+        ? Math.round((Number(option.votes || 0) / totalVotes) * 100)
+        : 0
+    })),
+    totalVotes
+  };
+}
+
 async function getActivePoll() {
   return Poll.findOne({ isActive:true }).sort('-createdAt');
 }
@@ -75,29 +129,11 @@ exports.getPoll = async (req, res) => {
       return errorResponse(res, 404, 'No active poll right now');
     }
 
-    const totalVotes =
-      poll.options.reduce((s, o) => s + Number(o.votes || 0), 0);
-
-    const options =
-      poll.options.map(o => ({
-        ...o.toObject(),
-        percentage:
-          totalVotes > 0
-            ? Math.round((Number(o.votes || 0) / totalVotes) * 100)
-            : 0
-      }));
-
     return successResponse(
       res,
       200,
       'Poll fetched',
-      {
-        poll: {
-          ...poll.toObject(),
-          options
-        },
-        totalVotes
-      }
+      pollResultPayload(poll)
     );
 
   } catch (err) {
@@ -126,7 +162,14 @@ exports.votePoll = async (req, res) => {
       poll.voters.some(v => String(v) === String(req.user._id));
 
     if (alreadyVoted) {
-      return errorResponse(res, 400, 'You have already voted');
+      return res.status(409).json({
+        success: false,
+        message: 'You have already voted in this poll',
+        data: {
+          alreadyVoted: true,
+          ...pollResultPayload(poll)
+        }
+      });
     }
 
     poll.options[idx].votes += 1;
@@ -146,23 +189,13 @@ exports.votePoll = async (req, res) => {
       { $inc: { fanPoints: 50 } }
     );
 
-    const totalVotes =
-      poll.options.reduce((s, o) => s + Number(o.votes || 0), 0);
-
-    const options =
-      poll.options.map(o => ({
-        ...o.toObject(),
-        percentage:
-          totalVotes > 0
-            ? Math.round((Number(o.votes || 0) / totalVotes) * 100)
-            : 0
-      }));
+    const result = pollResultPayload(poll);
 
     try {
       getIO().emit('poll:vote-update', {
         pollId,
-        options,
-        totalVotes
+        options: result.options,
+        totalVotes: result.totalVotes
       });
     } catch {}
 
@@ -170,7 +203,7 @@ exports.votePoll = async (req, res) => {
       res,
       200,
       'Vote recorded! +50 Fan Points',
-      { options, totalVotes }
+      result
     );
 
   } catch (err) {
@@ -311,14 +344,17 @@ exports.getFeed = async (req, res) => {
       })
         .sort('-createdAt')
         .skip((Number(page) - 1) * Number(limit))
-        .limit(Number(limit))
-        .populate('user','firstName lastName avatar');
+        .limit(Math.min(Number(limit) || 20, 50))
+        .populate('user','firstName lastName avatar')
+        .populate('comments.user','firstName lastName avatar');
 
     return successResponse(
       res,
       200,
       'Fan feed fetched',
-      { posts }
+      {
+        posts: posts.map(post => publicFanPost(post, req.user?._id))
+      }
     );
 
   } catch (err) {
@@ -358,8 +394,11 @@ exports.postToFeed = async (req, res) => {
       { $inc: { fanPoints: 20 } }
     );
 
+    const publicPostData = publicFanPost(post, req.user._id);
+
     try {
       getIO().emit('fan:new-post', {
+        post: publicPostData,
         user   : post.user.firstName || 'Paddox Fan',
         text   : post.text,
         time   : 'Just now',
@@ -371,11 +410,130 @@ exports.postToFeed = async (req, res) => {
       res,
       201,
       'Posted! +20 Fan Points',
-      { post: publicPost(post) }
+      { post: publicPostData }
     );
 
   } catch (err) {
     return serverError(res, err, 'Post fan feed failed');
+  }
+};
+
+/* ── LIKE / UNLIKE FAN FEED POST ── */
+exports.toggleFeedLike = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const post =
+      await FanPost.findOne({
+        _id: id,
+        isApproved: true,
+        isFlagged: false
+      });
+
+    if (!post) {
+      return errorResponse(res, 404, 'Fan post not found');
+    }
+
+    if (!Array.isArray(post.likedBy)) post.likedBy = [];
+
+    const userId = String(req.user._id);
+    const alreadyLiked = post.likedBy.some(v => String(v) === userId);
+
+    if (alreadyLiked) {
+      post.likedBy = post.likedBy.filter(v => String(v) !== userId);
+    } else {
+      post.likedBy.push(req.user._id);
+    }
+
+    post.likes = post.likedBy.length;
+    await post.save();
+
+    await post.populate('user','firstName lastName avatar');
+    await post.populate('comments.user','firstName lastName avatar');
+
+    const publicPostData = publicFanPost(post, req.user._id);
+
+    try {
+      getIO().emit('fan:post-like', {
+        postId: post._id,
+        likesCount: publicPostData.likesCount,
+        liked: !alreadyLiked
+      });
+    } catch {}
+
+    return successResponse(
+      res,
+      200,
+      alreadyLiked ? 'Like removed' : 'Post liked',
+      { post: publicPostData }
+    );
+
+  } catch (err) {
+    return serverError(res, err, 'Toggle feed like failed');
+  }
+};
+
+/* ── COMMENT ON FAN FEED POST ── */
+exports.addFeedComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cleanText = String(req.body?.text || '').trim().slice(0, 220);
+
+    if (!cleanText) {
+      return errorResponse(res, 400, 'Comment text required');
+    }
+
+    const post =
+      await FanPost.findOne({
+        _id: id,
+        isApproved: true,
+        isFlagged: false
+      });
+
+    if (!post) {
+      return errorResponse(res, 404, 'Fan post not found');
+    }
+
+    post.comments.push({
+      user: req.user._id,
+      text: cleanText
+    });
+
+    await post.save();
+
+    await post.populate('user','firstName lastName avatar');
+    await post.populate('comments.user','firstName lastName avatar');
+
+    await FanPoints.create({
+      user: req.user._id,
+      action: 'fan_comment',
+      points: 5,
+      meta: { postId: post._id }
+    });
+
+    await User.findByIdAndUpdate(
+      req.user._id,
+      { $inc: { fanPoints: 5 } }
+    );
+
+    const publicPostData = publicFanPost(post, req.user._id);
+
+    try {
+      getIO().emit('fan:post-comment', {
+        postId: post._id,
+        post: publicPostData
+      });
+    } catch {}
+
+    return successResponse(
+      res,
+      201,
+      'Comment added! +5 Fan Points',
+      { post: publicPostData }
+    );
+
+  } catch (err) {
+    return serverError(res, err, 'Add feed comment failed');
   }
 };
 
@@ -499,7 +657,15 @@ exports.adminUpdatePoll = async (req, res) => {
     await poll.save();
     if (poll.isActive) await deactivateOtherPolls(poll._id);
 
-    try { getIO().emit('poll:changed', { poll: publicPoll(poll) }); } catch {}
+    try {
+      const updated = publicPoll(poll);
+      getIO().emit('poll:changed', { poll: updated });
+      getIO().emit('poll:vote-update', {
+        pollId: String(poll._id),
+        options: updated.options,
+        totalVotes: updated.totalVotes
+      });
+    } catch {}
 
     return successResponse(res, 200, 'Poll updated', {
       poll: publicPoll(poll)

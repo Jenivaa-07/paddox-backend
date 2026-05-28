@@ -13,8 +13,10 @@ router.post('/poll/vote', protect, fan.votePoll);
 router.get('/leaderboard', fan.getLeaderboard);
 router.get('/trivia', fan.getTrivia);
 router.post('/trivia/answer', optionalAuth, fan.answerTrivia);
-router.get('/feed', fan.getFeed);
+router.get('/feed', optionalAuth, fan.getFeed);
 router.post('/feed', protect, fan.postToFeed);
+router.post('/feed/:id/like', protect, fan.toggleFeedLike);
+router.post('/feed/:id/comments', protect, fan.addFeedComment);
 
 /* Quotes / drivers / home branding */
 router.get('/quotes', fan.getQuotes);
