@@ -26,23 +26,8 @@ function publicPost(post) {
   return obj;
 }
 
-async function ensureDefaultPoll() {
-  let poll = await Poll.findOne({ isActive:true }).sort('-createdAt');
-
-  if (!poll) {
-    poll = await Poll.create({
-      question: "Who will win the next Grand Prix?",
-      options: [
-        { label: 'Max Verstappen 🔵', votes: 0 },
-        { label: 'Charles Leclerc 🔴', votes: 0 },
-        { label: 'Lando Norris 🟠', votes: 0 },
-        { label: 'Lewis Hamilton ⭐', votes: 0 }
-      ],
-      isActive: true
-    });
-  }
-
-  return poll;
+async function getActivePoll() {
+  return Poll.findOne({ isActive:true }).sort('-createdAt');
 }
 
 async function ensureDefaultTrivia() {
@@ -84,7 +69,11 @@ async function ensureDefaultTrivia() {
 /* ── GET ACTIVE POLL ── */
 exports.getPoll = async (req, res) => {
   try {
-    const poll = await ensureDefaultPoll();
+    const poll = await getActivePoll();
+
+    if (!poll) {
+      return errorResponse(res, 404, 'No active poll right now');
+    }
 
     const totalVotes =
       poll.options.reduce((s, o) => s + Number(o.votes || 0), 0);
@@ -391,6 +380,172 @@ exports.postToFeed = async (req, res) => {
 };
 
 
+
+
+/* ── ADMIN POLL HELPERS ── */
+function publicPoll(poll) {
+  const obj = poll?.toObject ? poll.toObject() : (poll || {});
+  const options = Array.isArray(obj.options) ? obj.options : [];
+  const totalVotes = options.reduce((sum, o) => sum + Number(o.votes || 0), 0);
+  return {
+    ...obj,
+    totalVotes,
+    options: options.map(o => ({
+      ...o,
+      percentage: totalVotes > 0 ? Math.round((Number(o.votes || 0) / totalVotes) * 100) : 0
+    }))
+  };
+}
+
+function normalizePollOptions(options = [], resetVotes = false) {
+  const list = Array.isArray(options) ? options : [];
+
+  return list
+    .map(item => {
+      const src = typeof item === 'string' ? { label:item } : (item || {});
+      const label = src.label || src.text || '';
+      const votes = resetVotes ? 0 : Number(src.votes || 0);
+
+      return {
+        label    : String(label || '').trim(),
+        votes    : Number.isFinite(votes) ? votes : 0,
+        logo     : String(src.logo || src.teamLogo || src.image || '').trim(),
+        teamName : String(src.teamName || src.team || src.logoName || '').trim(),
+        teamColor: String(src.teamColor || src.color || '#e8002d').trim(),
+        logoKey  : String(src.logoKey || src.key || src.slug || '').trim()
+      };
+    })
+    .filter(item => item.label)
+    .slice(0, 5);
+}
+
+async function deactivateOtherPolls(activeId) {
+  if (!activeId) return;
+  await Poll.updateMany({ _id: { $ne: activeId } }, { $set: { isActive: false } });
+}
+
+/* ── ADMIN GET ALL POLLS ── */
+exports.adminGetPolls = async (req, res) => {
+  try {
+    const polls = await Poll.find()
+      .sort({ isActive: -1, createdAt: -1 })
+      .limit(200);
+
+    return successResponse(res, 200, 'Admin polls fetched', {
+      polls: polls.map(publicPoll)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin get polls failed');
+  }
+};
+
+/* ── ADMIN CREATE POLL ── */
+exports.adminCreatePoll = async (req, res) => {
+  try {
+    const question = String(req.body.question || '').trim();
+    const options = normalizePollOptions(req.body.options, true);
+    const isActive = req.body.isActive !== false;
+
+    if (!question) return errorResponse(res, 400, 'Poll question required');
+    if (options.length < 2) return errorResponse(res, 400, 'At least 2 poll options required');
+
+    const poll = await Poll.create({
+      question,
+      options,
+      voters: [],
+      isActive,
+      endsAt: req.body.endsAt || undefined,
+      createdBy: req.user?._id
+    });
+
+    if (isActive) await deactivateOtherPolls(poll._id);
+
+    try { getIO().emit('poll:changed', { poll: publicPoll(poll) }); } catch {}
+
+    return successResponse(res, 201, 'Poll created', {
+      poll: publicPoll(poll)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Create poll failed');
+  }
+};
+
+/* ── ADMIN UPDATE POLL ── */
+exports.adminUpdatePoll = async (req, res) => {
+  try {
+    const poll = await Poll.findById(req.params.id);
+    if (!poll) return errorResponse(res, 404, 'Poll not found');
+
+    if (req.body.question !== undefined) {
+      const question = String(req.body.question || '').trim();
+      if (!question) return errorResponse(res, 400, 'Poll question required');
+      poll.question = question;
+    }
+
+    if (req.body.options !== undefined) {
+      const resetVotes = !!req.body.resetVotes;
+      const normalized = normalizePollOptions(req.body.options, resetVotes);
+      if (normalized.length < 2) return errorResponse(res, 400, 'At least 2 poll options required');
+      poll.options = normalized;
+      if (resetVotes) poll.voters = [];
+    } else if (req.body.resetVotes) {
+      poll.options.forEach(option => { option.votes = 0; });
+      poll.voters = [];
+    }
+
+    if (req.body.isActive !== undefined) poll.isActive = !!req.body.isActive;
+    if (req.body.endsAt !== undefined) poll.endsAt = req.body.endsAt || undefined;
+
+    await poll.save();
+    if (poll.isActive) await deactivateOtherPolls(poll._id);
+
+    try { getIO().emit('poll:changed', { poll: publicPoll(poll) }); } catch {}
+
+    return successResponse(res, 200, 'Poll updated', {
+      poll: publicPoll(poll)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Update poll failed');
+  }
+};
+
+/* ── ADMIN SET ACTIVE POLL ── */
+exports.adminSetActivePoll = async (req, res) => {
+  try {
+    const poll = await Poll.findById(req.params.id);
+    if (!poll) return errorResponse(res, 404, 'Poll not found');
+
+    poll.isActive = req.body.isActive !== false;
+    await poll.save();
+
+    if (poll.isActive) await deactivateOtherPolls(poll._id);
+
+    try { getIO().emit('poll:changed', { poll: publicPoll(poll) }); } catch {}
+
+    return successResponse(res, 200, 'Active poll updated', {
+      poll: publicPoll(poll)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Set active poll failed');
+  }
+};
+
+/* ── ADMIN DELETE POLL ── */
+exports.adminDeletePoll = async (req, res) => {
+  try {
+    const poll = await Poll.findByIdAndDelete(req.params.id);
+    if (!poll) return errorResponse(res, 404, 'Poll not found');
+
+    try { getIO().emit('poll:changed', { deletedId: req.params.id }); } catch {}
+
+    return successResponse(res, 200, 'Poll deleted', {
+      deletedId: req.params.id
+    });
+  } catch (err) {
+    return serverError(res, err, 'Delete poll failed');
+  }
+};
+
 /* ── DEFAULT QUOTES SEED ── */
 async function ensureDefaultQuotes() {
   const count = await Quote.countDocuments();
@@ -398,21 +553,21 @@ async function ensureDefaultQuotes() {
   if (count > 0) return;
 
   await Quote.insertMany([
-    { text:'When you are fitted in a racing car and you race to win, second or third place is not enough.', driver:'Ayrton Senna', team:'McLaren / Lotus / Williams', era:'legend', category:'champions', avatar:'🇧🇷', isFeatured:true },
-    { text:'The moment money becomes your motivation, you are immediately not as good as someone who is stimulated by passion.', driver:'Sebastian Vettel', team:'Red Bull / Ferrari / Aston Martin', era:'legend', category:'motivation', avatar:'🇩🇪', isFeatured:true },
-    { text:'I do not aspire to be like other drivers. I aspire to be unique in my own way.', driver:'Lewis Hamilton', team:'Mercedes / Ferrari', era:'current', category:'champions', avatar:'⭐', isFeatured:true },
-    { text:'I always believe I can improve. That is the mindset you need in Formula 1.', driver:'Max Verstappen', team:'Oracle Red Bull Racing', era:'current', category:'current-grid', avatar:'🔵', isFeatured:true },
-    { text:'Monaco is special. You need confidence, precision and a little bit of magic.', driver:'Charles Leclerc', team:'Scuderia Ferrari', era:'current', category:'race-weekend', avatar:'🔴' },
-    { text:'You cannot always control the result, but you can control how much you push.', driver:'Lando Norris', team:'McLaren F1 Team', era:'current', category:'motivation', avatar:'🟠' },
-    { text:'Experience teaches you where to take risk and where to be patient.', driver:'Fernando Alonso', team:'Aston Martin F1', era:'current', category:'racecraft', avatar:'🟢' },
-    { text:'To finish first, first you have to finish.', driver:'Juan Manuel Fangio', team:'F1 Legend', era:'legend', category:'historic', avatar:'🏆' },
-    { text:'I was always racing for myself, not against anyone else.', driver:'Niki Lauda', team:'Ferrari / McLaren', era:'legend', category:'historic', avatar:'🇦🇹' },
-    { text:'Racing is life. Everything before or after is just waiting.', driver:'Steve McQueen', team:'Racing Icon', era:'legend', category:'historic', avatar:'🎬' },
-    { text:'Every lap is a new chance to understand the car better.', driver:'Oscar Piastri', team:'McLaren F1 Team', era:'current', category:'current-grid', avatar:'🟠' },
-    { text:'Pressure is part of racing. You learn to turn it into focus.', driver:'George Russell', team:'Mercedes-AMG Petronas', era:'current', category:'motivation', avatar:'⚫' },
-    { text:'The best races are won before the lights go out — in preparation.', driver:'Carlos Sainz', team:'Williams / Ferrari', era:'current', category:'racecraft', avatar:'🔵' },
-    { text:'In Formula 1, small details become big differences.', driver:'Kimi Räikkönen', team:'Ferrari / McLaren / Sauber', era:'legend', category:'racecraft', avatar:'🇫🇮' },
-    { text:'Sometimes you need to trust the car, sometimes the car needs to trust you.', driver:'Daniel Ricciardo', team:'F1 Driver', era:'legend', category:'motivation', avatar:'🇦🇺' }
+    { text:'When you are fitted in a racing car and you race to win, second or third place is not enough.', driver:'Ayrton Senna', team:'McLaren / Lotus / Williams', era:'legend', category:'champions', avatar:'', isFeatured:true },
+    { text:'The moment money becomes your motivation, you are immediately not as good as someone who is stimulated by passion.', driver:'Sebastian Vettel', team:'Red Bull / Ferrari / Aston Martin', era:'legend', category:'motivation', avatar:'', isFeatured:true },
+    { text:'I do not aspire to be like other drivers. I aspire to be unique in my own way.', driver:'Lewis Hamilton', team:'Mercedes / Ferrari', era:'current', category:'champions', avatar:'', isFeatured:true },
+    { text:'I always believe I can improve. That is the mindset you need in Formula 1.', driver:'Max Verstappen', team:'Oracle Red Bull Racing', era:'current', category:'current-grid', avatar:'', isFeatured:true },
+    { text:'Monaco is special. You need confidence, precision and a little bit of magic.', driver:'Charles Leclerc', team:'Scuderia Ferrari', era:'current', category:'race-weekend', avatar:'' },
+    { text:'You cannot always control the result, but you can control how much you push.', driver:'Lando Norris', team:'McLaren F1 Team', era:'current', category:'motivation', avatar:'' },
+    { text:'Experience teaches you where to take risk and where to be patient.', driver:'Fernando Alonso', team:'Aston Martin F1', era:'current', category:'racecraft', avatar:'' },
+    { text:'To finish first, first you have to finish.', driver:'Juan Manuel Fangio', team:'F1 Legend', era:'legend', category:'historic', avatar:'' },
+    { text:'I was always racing for myself, not against anyone else.', driver:'Niki Lauda', team:'Ferrari / McLaren', era:'legend', category:'historic', avatar:'' },
+    { text:'Racing is life. Everything before or after is just waiting.', driver:'Steve McQueen', team:'Racing Icon', era:'legend', category:'historic', avatar:'' },
+    { text:'Every lap is a new chance to understand the car better.', driver:'Oscar Piastri', team:'McLaren F1 Team', era:'current', category:'current-grid', avatar:'' },
+    { text:'Pressure is part of racing. You learn to turn it into focus.', driver:'George Russell', team:'Mercedes-AMG Petronas', era:'current', category:'motivation', avatar:'' },
+    { text:'The best races are won before the lights go out — in preparation.', driver:'Carlos Sainz', team:'Williams / Ferrari', era:'current', category:'racecraft', avatar:'' },
+    { text:'In Formula 1, small details become big differences.', driver:'Kimi Räikkönen', team:'Ferrari / McLaren / Sauber', era:'legend', category:'racecraft', avatar:'' },
+    { text:'Sometimes you need to trust the car, sometimes the car needs to trust you.', driver:'Daniel Ricciardo', team:'F1 Driver', era:'legend', category:'motivation', avatar:'' }
   ]);
 }
 
