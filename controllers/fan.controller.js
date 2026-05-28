@@ -504,12 +504,24 @@ exports.addFeedComment = async (req, res) => {
     await post.populate('user','firstName lastName avatar');
     await post.populate('comments.user','firstName lastName avatar');
 
-    await FanPoints.create({
-      user: req.user._id,
-      action: 'fan_comment',
-      points: 5,
-      meta: { postId: post._id }
-    });
+    /*
+      Keep comments working even if the FanPoints model enum is older.
+      Current project enum already accepts fan_post, while fan_comment may not
+      exist on deployed backend yet. We still award +5 points safely.
+    */
+    try {
+      await FanPoints.create({
+        user: req.user._id,
+        action: 'fan_post',
+        points: 5,
+        meta: {
+          postId: post._id,
+          source: 'fan_comment'
+        }
+      });
+    } catch (pointsErr) {
+      console.warn('Fan comment points history skipped:', pointsErr.message);
+    }
 
     await User.findByIdAndUpdate(
       req.user._id,
