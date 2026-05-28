@@ -17,6 +17,8 @@ router.get('/feed', optionalAuth, fan.getFeed);
 router.post('/feed', protect, fan.postToFeed);
 router.post('/feed/:id/like', protect, fan.toggleFeedLike);
 router.post('/feed/:id/comments', protect, fan.addFeedComment);
+router.delete('/feed/:id/comments/:commentId', protect, fan.deleteFeedComment);
+router.delete('/feed/:id', protect, fan.deleteFeedPost);
 
 /* Quotes / drivers / home branding */
 router.get('/quotes', fan.getQuotes);

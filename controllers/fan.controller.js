@@ -26,22 +26,29 @@ function publicPost(post) {
   return obj;
 }
 
-function publicFanPost(post, viewerId = null) {
+function publicFanPost(post, viewerId = null, viewerRole = '') {
   const obj = post?.toObject ? post.toObject() : (post || {});
   const likedBy = Array.isArray(obj.likedBy) ? obj.likedBy : [];
   const legacyLikes = Number(obj.likes || 0);
   const likesCount = likedBy.length || legacyLikes || 0;
   const viewer = viewerId ? String(viewerId) : '';
+  const isAdmin = String(viewerRole || '').toLowerCase() === 'admin';
+  const ownerId = String(obj.user?._id || obj.user || '');
+  const canDeletePost = !!viewer && (isAdmin || ownerId === viewer);
 
   const comments = Array.isArray(obj.comments) ? obj.comments : [];
   const cleanComments = comments
     .slice(-8)
-    .map(comment => ({
-      _id: comment._id,
-      text: comment.text,
-      createdAt: comment.createdAt,
-      user: comment.user
-    }));
+    .map(comment => {
+      const commentOwner = String(comment.user?._id || comment.user || '');
+      return {
+        _id: comment._id,
+        text: comment.text,
+        createdAt: comment.createdAt,
+        user: comment.user,
+        canDeleteComment: !!viewer && (isAdmin || commentOwner === viewer || canDeletePost)
+      };
+    });
 
   return {
     ...obj,
@@ -50,6 +57,7 @@ function publicFanPost(post, viewerId = null) {
     likedByCurrentUser: viewer
       ? likedBy.some(id => String(id?._id || id) === viewer)
       : false,
+    canDeletePost,
     comments: cleanComments
   };
 }
@@ -353,7 +361,7 @@ exports.getFeed = async (req, res) => {
       200,
       'Fan feed fetched',
       {
-        posts: posts.map(post => publicFanPost(post, req.user?._id))
+        posts: posts.map(post => publicFanPost(post, req.user?._id, req.user?.role))
       }
     );
 
@@ -394,7 +402,7 @@ exports.postToFeed = async (req, res) => {
       { $inc: { fanPoints: 20 } }
     );
 
-    const publicPostData = publicFanPost(post, req.user._id);
+    const publicPostData = publicFanPost(post, req.user._id, req.user.role);
 
     try {
       getIO().emit('fan:new-post', {
@@ -451,7 +459,7 @@ exports.toggleFeedLike = async (req, res) => {
     await post.populate('user','firstName lastName avatar');
     await post.populate('comments.user','firstName lastName avatar');
 
-    const publicPostData = publicFanPost(post, req.user._id);
+    const publicPostData = publicFanPost(post, req.user._id, req.user.role);
 
     try {
       getIO().emit('fan:post-like', {
@@ -528,7 +536,7 @@ exports.addFeedComment = async (req, res) => {
       { $inc: { fanPoints: 5 } }
     );
 
-    const publicPostData = publicFanPost(post, req.user._id);
+    const publicPostData = publicFanPost(post, req.user._id, req.user.role);
 
     try {
       getIO().emit('fan:post-comment', {
@@ -546,6 +554,102 @@ exports.addFeedComment = async (req, res) => {
 
   } catch (err) {
     return serverError(res, err, 'Add feed comment failed');
+  }
+};
+
+
+function canManageFanPostResource(resourceUser, reqUser) {
+  if (!reqUser) return false;
+  if (String(reqUser.role || '').toLowerCase() === 'admin') return true;
+  return String(resourceUser?._id || resourceUser || '') === String(reqUser._id);
+}
+
+/* ── DELETE FAN FEED POST ── */
+exports.deleteFeedPost = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const post = await FanPost.findOne({
+      _id: id,
+      isApproved: true,
+      isFlagged: false
+    });
+
+    if (!post) {
+      return errorResponse(res, 404, 'Fan post not found');
+    }
+
+    if (!canManageFanPostResource(post.user, req.user)) {
+      return errorResponse(res, 403, 'You can delete only your own post');
+    }
+
+    await FanPost.deleteOne({ _id: post._id });
+
+    try {
+      getIO().emit('fan:post-delete', { postId: String(post._id) });
+    } catch {}
+
+    return successResponse(
+      res,
+      200,
+      'Post deleted',
+      { postId: String(post._id) }
+    );
+
+  } catch (err) {
+    return serverError(res, err, 'Delete fan post failed');
+  }
+};
+
+/* ── DELETE FAN FEED COMMENT ── */
+exports.deleteFeedComment = async (req, res) => {
+  try {
+    const { id, commentId } = req.params;
+
+    const post = await FanPost.findOne({
+      _id: id,
+      isApproved: true,
+      isFlagged: false
+    });
+
+    if (!post) {
+      return errorResponse(res, 404, 'Fan post not found');
+    }
+
+    const comment = post.comments.id(commentId);
+
+    if (!comment) {
+      return errorResponse(res, 404, 'Comment not found');
+    }
+
+    if (!canManageFanPostResource(comment.user, req.user) && !canManageFanPostResource(post.user, req.user)) {
+      return errorResponse(res, 403, 'You can delete only your own comment');
+    }
+
+    post.comments.pull(commentId);
+    await post.save();
+
+    await post.populate('user','firstName lastName avatar');
+    await post.populate('comments.user','firstName lastName avatar');
+
+    const publicPostData = publicFanPost(post, req.user._id, req.user.role);
+
+    try {
+      getIO().emit('fan:post-comment', {
+        postId: post._id,
+        post: publicPostData
+      });
+    } catch {}
+
+    return successResponse(
+      res,
+      200,
+      'Comment deleted',
+      { post: publicPostData, commentId }
+    );
+
+  } catch (err) {
+    return serverError(res, err, 'Delete feed comment failed');
   }
 };
 
