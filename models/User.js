@@ -9,6 +9,8 @@ const userSchema = new mongoose.Schema({
   lastName     : { type:String, trim:true, maxlength:50 },
   email        : { type:String, required:[true,'Email required'], unique:true, lowercase:true, trim:true, match:[/^\S+@\S+\.\S+$/,'Invalid email'] },
   password     : { type:String, required:[true,'Password required'], minlength:6, select:false },
+  authProvider : { type:String, enum:['local','google'], default:'local' },
+  googleId     : { type:String, default:'', index:true },
   role         : { type:String, enum:['user','admin'], default:'user' },
   avatar       : { url:{ type:String, default:'' }, publicId:{ type:String, default:'' } },
   phone        : { type:String, trim:true },
@@ -36,6 +38,17 @@ const userSchema = new mongoose.Schema({
   isBanned     : { type:Boolean, default:false },
   isVerified   : { type:Boolean, default:false },
   lastLogin    : { type:Date },
+  security     : {
+    passwordChangedAt: Date,
+    twoFactor: {
+      enabled      : { type:Boolean, default:false },
+      method       : { type:String, enum:['email'], default:'email' },
+      codeHash     : { type:String, select:false },
+      codeExpires  : { type:Date, select:false },
+      pendingAction: { type:String, enum:['enable','disable','login',''], default:'' },
+      lastVerifiedAt: Date
+    }
+  },
   resetPasswordToken  : String,
   resetPasswordExpire : Date,
 }, { timestamps:true });
@@ -71,5 +84,20 @@ userSchema.virtual('fullName').get(function() {
   return `${this.firstName} ${this.lastName || ''}`.trim();
 });
 
+
+/* Keep sensitive security fields out of JSON responses */
+userSchema.methods.toSafeObject = function() {
+  const obj = this.toObject();
+  delete obj.password;
+  delete obj.refreshToken;
+  if (obj.security?.twoFactor) {
+    delete obj.security.twoFactor.codeHash;
+    delete obj.security.twoFactor.codeExpires;
+    delete obj.security.twoFactor.pendingAction;
+  }
+  return obj;
+};
+
 module.exports = mongoose.model('User', userSchema);
+
 

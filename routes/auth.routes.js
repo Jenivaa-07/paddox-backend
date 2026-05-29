@@ -27,6 +27,10 @@ router.post('/login', authLimiter, [
   body('password').notEmpty(),
 ], validate, auth.login);
 
+router.get('/google/config', auth.googleConfig);
+router.post('/google', authLimiter, auth.googleLogin);
+router.post('/2fa/verify', authLimiter, auth.verifyTwoFactorLogin);
+
 router.post('/refresh',          auth.refresh);
 router.post('/logout',           protect, auth.logout);
 router.get('/me',                protect, auth.getMe);

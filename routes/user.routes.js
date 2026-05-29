@@ -18,4 +18,9 @@ router.put('/notifications',    user.updateNotifications);
 router.get('/fan-points',       user.getFanPoints);
 router.get('/downloads',        user.getDownloads);
 
+/* Security */
+router.put('/security/password', user.changePassword);
+router.post('/security/2fa/send', user.sendTwoFactorSetupCode);
+router.put('/security/2fa/verify', user.verifyTwoFactorSetup);
+
 module.exports = router;
