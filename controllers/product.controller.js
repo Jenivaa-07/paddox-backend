@@ -1,8 +1,9 @@
-
 /* ============================================================
    FILE: controllers/product.controller.js
-   PADDOX — SAFE PRODUCT CONTROLLER
-   Supports admin add/edit products from frontend JSON.
+   PADDOX — PRODUCT CONTROLLER
+   Phase A4.1.2: Supports JSON + multipart product images.
+   Images uploaded from Admin are stored in Cloudinary and saved
+   as permanent Cloudinary URLs inside MongoDB.
    ============================================================ */
 
 const Product = require('../models/Product');
@@ -44,17 +45,85 @@ function normaliseCategory(value) {
   return String(value || 'apparel').toLowerCase();
 }
 
-function buildProductPayload(body = {}, req = {}) {
+function toBoolean(value, fallback = false) {
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  if (value === undefined || value === null || value === '') return fallback;
+  return Boolean(value);
+}
+
+function nestedRating(body = {}) {
+  return (
+    body['ratings[average]'] ??
+    body?.ratings?.average ??
+    body.rating
+  );
+}
+
+function uploadBufferToCloudinary(file) {
+  return new Promise((resolve, reject) => {
+    if (!cloudinary) {
+      return reject(new Error('Cloudinary is not configured'));
+    }
+
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: 'paddox/products',
+        resource_type: 'image',
+        transformation: [
+          { width: 1400, height: 1400, crop: 'limit' },
+          { quality: 'auto', fetch_format: 'auto' }
+        ]
+      },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve({
+          url: result.secure_url,
+          publicId: result.public_id,
+          alt: file.originalname || 'PADDOX product image'
+        });
+      }
+    );
+
+    stream.end(file.buffer);
+  });
+}
+
+async function normaliseUploadedImages(files = []) {
+  if (!files.length) return [];
+
+  const selectedFiles = files.slice(0, 10);
+
+  const images = [];
+
+  for (const file of selectedFiles) {
+    /* CloudinaryStorage gives file.path + file.filename. */
+    if (file.path && /^https?:\/\//i.test(file.path)) {
+      images.push({
+        url: file.path,
+        publicId: file.filename || file.public_id || '',
+        alt: file.originalname || 'PADDOX product image'
+      });
+      continue;
+    }
+
+    /* Memory storage fallback uploads buffer to Cloudinary here. */
+    if (file.buffer) {
+      images.push(await uploadBufferToCloudinary(file));
+    }
+  }
+
+  return images;
+}
+
+async function buildProductPayload(body = {}, req = {}) {
   const name = String(body.name || '').trim();
 
   const payload = {
     ...body,
     name,
-    slug: body.slug || slugify(name, {
-      lower: true,
-      strict: true
-    }),
-    team: String(body.team || 'Paddox').trim(),
+    slug: body.slug || slugify(name, { lower: true, strict: true }),
+    team: String(body.team || 'PADDOX Original').trim(),
     category: normaliseCategory(body.category),
     badge: normaliseBadge(body.badge),
     price: Number(body.price || 0),
@@ -66,9 +135,8 @@ function buildProductPayload(body = {}, req = {}) {
       String(body.shortDesc || body.description || '')
         .trim()
         .slice(0, 300),
-    isActive: body.isActive === false || body.isActive === 'false'
-      ? false
-      : true
+    isActive: toBoolean(body.isActive, true),
+    isFeatured: toBoolean(body.isFeatured, false)
   };
 
   if (body.salePrice === '' || body.salePrice === null || body.salePrice === undefined) {
@@ -81,9 +149,14 @@ function buildProductPayload(body = {}, req = {}) {
       Number(body.salePrice) < payload.price;
   }
 
+  if (payload.badge === 'featured') {
+    payload.isFeatured = true;
+  }
+
   if (Array.isArray(body.images)) {
     payload.images = body.images
       .filter(img => img && img.url)
+      .slice(0, 10)
       .map(img => ({
         url: img.url,
         publicId: img.publicId || '',
@@ -91,12 +164,10 @@ function buildProductPayload(body = {}, req = {}) {
       }));
   }
 
-  if (req.files?.length) {
-    payload.images = req.files.map(file => ({
-      url: file.path,
-      publicId: file.filename,
-      alt: file.originalname
-    }));
+  const uploadedImages = await normaliseUploadedImages(req.files || []);
+
+  if (uploadedImages.length) {
+    payload.images = uploadedImages;
   }
 
   if (!payload.images || !payload.images.length) {
@@ -106,19 +177,14 @@ function buildProductPayload(body = {}, req = {}) {
     }];
   }
 
-  if (body.ratings && body.ratings.average !== undefined) {
-    const avg = Math.max(0, Math.min(5, Number(body.ratings.average || 0)));
+  const ratingValue = nestedRating(body);
+
+  if (ratingValue !== undefined) {
+    const avg = Math.max(0, Math.min(5, Number(ratingValue || 0)));
 
     payload.ratings = {
       average: avg,
-      count: Number(body.ratings.count || (avg > 0 ? 1 : 0))
-    };
-  } else if (body.rating !== undefined) {
-    const avg = Math.max(0, Math.min(5, Number(body.rating || 0)));
-
-    payload.ratings = {
-      average: avg,
-      count: avg > 0 ? 1 : 0
+      count: Number(body['ratings[count]'] || body?.ratings?.count || (avg > 0 ? 1 : 0))
     };
   }
 
@@ -149,27 +215,17 @@ exports.getProducts = async (req, res) => {
     const query = admin ? {} : { isActive: true };
 
     if (category) query.category = category;
-
-    if (team) {
-      query.team = new RegExp(team, 'i');
-    }
-
+    if (team) query.team = new RegExp(team, 'i');
     if (badge) query.badge = badge;
-
     if (featured) query.isFeatured = true;
 
     if (minPrice || maxPrice) {
       query.price = {};
-
       if (minPrice) query.price.$gte = Number(minPrice);
       if (maxPrice) query.price.$lte = Number(maxPrice);
     }
 
-    if (search) {
-      query.$text = {
-        $search: search
-      };
-    }
+    if (search) query.$text = { $search: search };
 
     const sortMap = {
       'price-asc': { price: 1 },
@@ -180,9 +236,7 @@ exports.getProducts = async (req, res) => {
     };
 
     const sortObj = sortMap[sort] || sortMap.featured;
-
     const skip = (Number(page) - 1) * Number(limit);
-
     const total = await Product.countDocuments(query);
 
     const products = await Product.find(query)
@@ -191,13 +245,7 @@ exports.getProducts = async (req, res) => {
       .limit(Number(limit))
       .select('-__v');
 
-    return paginatedResponse(
-      res,
-      products,
-      Number(page),
-      Number(limit),
-      total
-    );
+    return paginatedResponse(res, products, Number(page), Number(limit), total);
 
   } catch (err) {
     return serverError(res, err, 'Get products failed');
@@ -214,16 +262,9 @@ exports.getProduct = async (req, res) => {
       ]
     });
 
-    if (!product) {
-      return errorResponse(res, 404, 'Product not found');
-    }
+    if (!product) return errorResponse(res, 404, 'Product not found');
 
-    return successResponse(
-      res,
-      200,
-      'Product fetched',
-      { product }
-    );
+    return successResponse(res, 200, 'Product fetched', { product });
 
   } catch (err) {
     return serverError(res, err, 'Get product failed');
@@ -233,24 +274,14 @@ exports.getProduct = async (req, res) => {
 /* ── CREATE PRODUCT ── */
 exports.createProduct = async (req, res) => {
   try {
-    const payload = buildProductPayload(req.body, req);
+    const payload = await buildProductPayload(req.body, req);
 
-    if (!payload.name) {
-      return errorResponse(res, 400, 'Product name required');
-    }
-
-    if (!payload.price || payload.price < 0) {
-      return errorResponse(res, 400, 'Valid price required');
-    }
+    if (!payload.name) return errorResponse(res, 400, 'Product name required');
+    if (!payload.price || payload.price < 0) return errorResponse(res, 400, 'Valid price required');
 
     const product = await Product.create(payload);
 
-    return successResponse(
-      res,
-      201,
-      'Product created',
-      { product }
-    );
+    return successResponse(res, 201, 'Product created', { product });
 
   } catch (err) {
     if (err.code === 11000) {
@@ -264,35 +295,22 @@ exports.createProduct = async (req, res) => {
 /* ── UPDATE PRODUCT ── */
 exports.updateProduct = async (req, res) => {
   try {
-    const payload = buildProductPayload(req.body, req);
+    const payload = await buildProductPayload(req.body, req);
 
     delete payload.createdBy;
 
     const product = await Product.findByIdAndUpdate(
       req.params.id,
       payload,
-      {
-        new: true,
-        runValidators: true
-      }
+      { new: true, runValidators: true }
     );
 
-    if (!product) {
-      return errorResponse(res, 404, 'Product not found');
-    }
+    if (!product) return errorResponse(res, 404, 'Product not found');
 
-    return successResponse(
-      res,
-      200,
-      'Product updated',
-      { product }
-    );
+    return successResponse(res, 200, 'Product updated', { product });
 
   } catch (err) {
-    if (err.code === 11000) {
-      return errorResponse(res, 400, 'Duplicate product name or SKU');
-    }
-
+    if (err.code === 11000) return errorResponse(res, 400, 'Duplicate product name or SKU');
     return serverError(res, err, 'Update product failed');
   }
 };
@@ -302,9 +320,7 @@ exports.deleteProduct = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
 
-    if (!product) {
-      return errorResponse(res, 404, 'Product not found');
-    }
+    if (!product) return errorResponse(res, 404, 'Product not found');
 
     if (cloudinary) {
       for (const img of product.images || []) {
@@ -316,11 +332,7 @@ exports.deleteProduct = async (req, res) => {
 
     await product.deleteOne();
 
-    return successResponse(
-      res,
-      200,
-      'Product deleted'
-    );
+    return successResponse(res, 200, 'Product deleted');
 
   } catch (err) {
     return serverError(res, err, 'Delete product failed');
@@ -330,26 +342,17 @@ exports.deleteProduct = async (req, res) => {
 /* ── ADD REVIEW ── */
 exports.addReview = async (req, res) => {
   try {
-    const {
-      rating,
-      title,
-      body
-    } = req.body;
-
+    const { rating, title, body } = req.body;
     const product = await Product.findById(req.params.id);
 
-    if (!product) {
-      return errorResponse(res, 404, 'Product not found');
-    }
+    if (!product) return errorResponse(res, 404, 'Product not found');
 
     const exists = await Review.findOne({
       product: req.params.id,
       user: req.user._id
     });
 
-    if (exists) {
-      return errorResponse(res, 400, 'You have already reviewed this product');
-    }
+    if (exists) return errorResponse(res, 400, 'You have already reviewed this product');
 
     const review = await Review.create({
       product: req.params.id,
@@ -359,12 +362,7 @@ exports.addReview = async (req, res) => {
       body
     });
 
-    return successResponse(
-      res,
-      201,
-      'Review added',
-      { review }
-    );
+    return successResponse(res, 201, 'Review added', { review });
 
   } catch (err) {
     return serverError(res, err, 'Add review failed');
@@ -381,15 +379,10 @@ exports.getReviews = async (req, res) => {
       .populate('user', 'firstName lastName avatar')
       .sort('-createdAt');
 
-    return successResponse(
-      res,
-      200,
-      'Reviews fetched',
-      {
-        reviews,
-        count: reviews.length
-      }
-    );
+    return successResponse(res, 200, 'Reviews fetched', {
+      reviews,
+      count: reviews.length
+    });
 
   } catch (err) {
     return serverError(res, err, 'Get reviews failed');
