@@ -5,8 +5,21 @@
 // config/socket.js
 const { Server } = require('socket.io');
 const jwt        = require('jsonwebtoken');
+const User       = require('../models/User');
 
 let io;
+
+async function isAdminSocket(socket) {
+  try {
+    if (!socket.user?.id) return false;
+    if (socket.user?.role === 'admin') return true;
+    const user = await User.findById(socket.user.id).select('role');
+    return user?.role === 'admin';
+  } catch {
+    return false;
+  }
+}
+
 
 const initSocket = (server) => {
   io = new Server(server, {
@@ -49,6 +62,41 @@ const initSocket = (server) => {
     if (socket.user?.id) {
       socket.join(`user:${socket.user.id}`);
     }
+
+
+    /* ── Admin notification relays ── */
+    socket.on('admin:new-drop', async (payload = {}) => {
+      if (!(await isAdminSocket(socket))) return;
+      const kind = String(payload.kind || payload.type || 'product').toLowerCase();
+      const eventName = kind.includes('asset') ? 'asset:new-drop' : 'product:new-drop';
+      io.emit(eventName, {
+        ...payload,
+        kind,
+        createdAt: payload.createdAt || new Date().toISOString()
+      });
+    });
+
+    socket.on('admin:race-alert', async (payload = {}) => {
+      if (!(await isAdminSocket(socket))) return;
+      io.emit('race:notification', {
+        title: payload.title || 'Race alert',
+        message: payload.message || 'A PADDOX race alert is live.',
+        category: 'Race Alerts',
+        ref: payload.ref || payload.title || Date.now(),
+        createdAt: payload.createdAt || new Date().toISOString()
+      });
+    });
+
+    socket.on('admin:community-update', async (payload = {}) => {
+      if (!(await isAdminSocket(socket))) return;
+      io.emit('community:notification', {
+        title: payload.title || 'Community update',
+        message: payload.message || 'New PADDOX community activity is live.',
+        category: payload.category || 'Fan Hub',
+        ref: payload.ref || payload.title || Date.now(),
+        createdAt: payload.createdAt || new Date().toISOString()
+      });
+    });
 
     /* ── Fan Feed events ── */
     socket.on('fan:join-room', ({ room }) => {

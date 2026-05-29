@@ -21,6 +21,22 @@ function serverError(res, err, label = 'Server error') {
   });
 }
 
+
+function emitFanPointsUpdate(userId, points = 0, reason = 'fan_activity', ref = '') {
+  try {
+    if (!userId || !points) return;
+    getIO().to(`user:${userId}`).emit('fan:points-update', {
+      points,
+      delta: points,
+      reason,
+      ref: ref || `${reason}-${Date.now()}`,
+      createdAt: new Date().toISOString()
+    });
+  } catch (err) {
+    console.warn('Fan points socket notify failed:', err.message);
+  }
+}
+
 function publicPost(post) {
   const obj = post.toObject ? post.toObject() : post;
   return obj;
@@ -196,6 +212,7 @@ exports.votePoll = async (req, res) => {
       req.user._id,
       { $inc: { fanPoints: 50 } }
     );
+    emitFanPointsUpdate(req.user._id, 50, 'poll_vote', `poll-${pollId}`);
 
     const result = pollResultPayload(poll);
 
@@ -318,6 +335,7 @@ exports.answerTrivia = async (req, res) => {
         req.user._id,
         { $inc: { fanPoints: pointsEarned } }
       );
+      emitFanPointsUpdate(req.user._id, pointsEarned, 'trivia', `trivia-${triviaId}`);
     }
 
     return successResponse(
@@ -401,6 +419,7 @@ exports.postToFeed = async (req, res) => {
       req.user._id,
       { $inc: { fanPoints: 20 } }
     );
+    emitFanPointsUpdate(req.user._id, 20, 'fan_post', `post-${post._id}`);
 
     const publicPostData = publicFanPost(post, req.user._id, req.user.role);
 
@@ -535,6 +554,7 @@ exports.addFeedComment = async (req, res) => {
       req.user._id,
       { $inc: { fanPoints: 5 } }
     );
+    emitFanPointsUpdate(req.user._id, 5, 'fan_comment', `comment-${post._id}-${Date.now()}`);
 
     const publicPostData = publicFanPost(post, req.user._id, req.user.role);
 
@@ -734,7 +754,7 @@ exports.adminCreatePoll = async (req, res) => {
 
     if (isActive) await deactivateOtherPolls(poll._id);
 
-    try { getIO().emit('poll:changed', { poll: publicPoll(poll) }); } catch {}
+    try { getIO().emit('poll:changed', { poll: publicPoll(poll), title: 'New poll is live', message: poll.question || 'A new PADDOX fan poll is live.' }); } catch {}
 
     return successResponse(res, 201, 'Poll created', {
       poll: publicPoll(poll)
@@ -905,7 +925,7 @@ exports.adminCreateTrivia = async (req, res) => {
       createdBy: req.user?._id
     });
 
-    try { getIO().emit('trivia:changed', { trivia: publicTrivia(trivia) }); } catch {}
+    try { getIO().emit('trivia:changed', { trivia: publicTrivia(trivia), title: 'New trivia is live', message: trivia.question || 'A new PADDOX trivia challenge is live.' }); } catch {}
 
     return successResponse(res, 201, 'Trivia created', {
       trivia: publicTrivia(trivia)

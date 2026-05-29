@@ -87,6 +87,17 @@ exports.getNextRace = async (req, res, next) => {
       };
     }, CACHE_TTL.nextRace);
 
+    try {
+      if (data?.race) {
+        getIO().emit('race:notification', {
+          title: 'Next race update',
+          message: `${data.race.name || 'Next Grand Prix'} is the next race on the PADDOX calendar.`,
+          category: 'Race Alerts',
+          ref: `next-race-${data.race.season || ''}-${data.race.round || data.race.name || 'race'}`
+        });
+      }
+    } catch {}
+
     successResponse(res, 200, 'Next race fetched', data);
   } catch (err) { next(err); }
 };

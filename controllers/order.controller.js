@@ -173,6 +173,19 @@ exports.placeOrder = async (req, res) => {
         req.user._id,
         { $inc: { fanPoints: pointsEarned } }
       );
+
+      try {
+        getIO().to(`user:${req.user._id}`).emit('fan:points-update', {
+          points: pointsEarned,
+          delta: pointsEarned,
+          reason: 'purchase',
+          ref: `purchase-${order._id}`,
+          orderId: order._id,
+          orderNumber: order.orderNumber
+        });
+      } catch (socketErr) {
+        console.warn('Fan points socket notify failed:', socketErr.message);
+      }
     } catch (err) {
       console.warn('Fan points failed:', err.message);
       pointsEarned = 0;
