@@ -35,6 +35,7 @@ const f1Routes       = require('./routes/f1.routes');
 const assetRoutes    = require('./routes/asset.routes');
 const adminRoutes    = require('./routes/admin.routes');
 const fanRoutes      = require('./routes/fan.routes');
+const couponRoutes   = require('./routes/coupon.routes');
 const uploadRoutes   = require('./routes/upload.routes');
 
 /* ── Connect DB ── */
@@ -111,6 +112,7 @@ app.use(`${API}/f1`,       f1Routes);
 app.use(`${API}/assets`,   assetRoutes);
 app.use(`${API}/admin`,    adminRoutes);
 app.use(`${API}/fan`,      fanRoutes);
+app.use(`${API}/coupons`,  couponRoutes);
 app.use(`${API}/uploads`,  uploadRoutes);
 
 /* ── 404 Handler ── */
