@@ -295,17 +295,31 @@ exports.createProduct = async (req, res) => {
 /* ── UPDATE PRODUCT ── */
 exports.updateProduct = async (req, res) => {
   try {
+    const existingProduct = await Product.findById(req.params.id);
+
+    if (!existingProduct) return errorResponse(res, 404, 'Product not found');
+
     const payload = await buildProductPayload(req.body, req);
 
     delete payload.createdBy;
+
+    /*
+      Phase A4.1.5 safety:
+      Editing text/stock/price without uploading replacement images must preserve
+      existing Cloudinary image URLs instead of replacing them with a placeholder.
+    */
+    const hasUploadedImages = Array.isArray(req.files) && req.files.length > 0;
+    const hasBodyImages = Array.isArray(req.body?.images) && req.body.images.length > 0;
+
+    if (!hasUploadedImages && !hasBodyImages) {
+      payload.images = existingProduct.images || [];
+    }
 
     const product = await Product.findByIdAndUpdate(
       req.params.id,
       payload,
       { new: true, runValidators: true }
     );
-
-    if (!product) return errorResponse(res, 404, 'Product not found');
 
     return successResponse(res, 200, 'Product updated', { product });
 
