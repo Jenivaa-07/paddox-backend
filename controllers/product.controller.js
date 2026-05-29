@@ -52,6 +52,21 @@ function toBoolean(value, fallback = false) {
   return Boolean(value);
 }
 
+function buildDiscountFields(priceValue, salePriceValue) {
+  const price = Number(priceValue || 0);
+  const salePrice = Number(salePriceValue || 0);
+
+  if (!price || !salePrice || salePrice >= price) {
+    return { salePrice: null, onSale: false, discountPercent: 0 };
+  }
+
+  return {
+    salePrice,
+    onSale: true,
+    discountPercent: Math.round(((price - salePrice) / price) * 100)
+  };
+}
+
 function nestedRating(body = {}) {
   return (
     body['ratings[average]'] ??
@@ -142,11 +157,13 @@ async function buildProductPayload(body = {}, req = {}) {
   if (body.salePrice === '' || body.salePrice === null || body.salePrice === undefined) {
     payload.salePrice = null;
     payload.onSale = false;
+    payload.discountPercent = 0;
   } else if (!Number.isNaN(Number(body.salePrice))) {
-    payload.salePrice = Number(body.salePrice);
-    payload.onSale =
-      Number(body.salePrice) > 0 &&
-      Number(body.salePrice) < payload.price;
+    Object.assign(payload, buildDiscountFields(payload.price, body.salePrice));
+  }
+
+  if (payload.onSale && !payload.badge) {
+    payload.badge = 'sale';
   }
 
   if (payload.badge === 'featured') {
@@ -209,6 +226,7 @@ exports.getProducts = async (req, res) => {
       limit = 12,
       search,
       featured,
+      onSale,
       admin
     } = req.query;
 
@@ -218,6 +236,7 @@ exports.getProducts = async (req, res) => {
     if (team) query.team = new RegExp(team, 'i');
     if (badge) query.badge = badge;
     if (featured) query.isFeatured = true;
+    if (onSale === 'true' || onSale === true) query.onSale = true;
 
     if (minPrice || maxPrice) {
       query.price = {};
@@ -278,6 +297,9 @@ exports.createProduct = async (req, res) => {
 
     if (!payload.name) return errorResponse(res, 400, 'Product name required');
     if (!payload.price || payload.price < 0) return errorResponse(res, 400, 'Valid price required');
+    if (req.body.salePrice && Number(req.body.salePrice) >= Number(payload.price)) {
+      return errorResponse(res, 400, 'Sale price must be less than original price');
+    }
 
     const product = await Product.create(payload);
 
@@ -302,6 +324,10 @@ exports.updateProduct = async (req, res) => {
     const payload = await buildProductPayload(req.body, req);
 
     delete payload.createdBy;
+
+    if (req.body.salePrice && Number(req.body.salePrice) >= Number(payload.price)) {
+      return errorResponse(res, 400, 'Sale price must be less than original price');
+    }
 
     /*
       Phase A4.1.5 safety:
