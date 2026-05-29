@@ -22,5 +22,9 @@ router.get('/downloads',        user.getDownloads);
 router.put('/security/password', user.changePassword);
 router.post('/security/2fa/send', user.sendTwoFactorSetupCode);
 router.put('/security/2fa/verify', user.verifyTwoFactorSetup);
+router.get('/security/sessions', user.getSecuritySessions);
+router.delete('/security/sessions/others', user.revokeOtherSecuritySessions);
+router.delete('/security/sessions/:sessionId', user.revokeSecuritySession);
+
 
 module.exports = router;

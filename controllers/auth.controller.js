@@ -11,11 +11,71 @@ const { generateAccessToken, generateRefreshToken, setRefreshCookie, clearRefres
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { sendEmail } = require('../config/resend');
 
+
+function tokenHash(token = '') {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function parseSessionDevice(req) {
+  const ua = req.headers['user-agent'] || '';
+  let browser = 'Browser';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/Chrome\//.test(ua) && !/Edg\//.test(ua)) browser = 'Chrome';
+  else if (/Safari\//.test(ua) && !/Chrome\//.test(ua)) browser = 'Safari';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+
+  let device = 'Desktop';
+  if (/iPhone|Android.*Mobile|Mobile/i.test(ua)) device = 'Phone';
+  else if (/iPad|Tablet|Android/i.test(ua)) device = 'Tablet';
+
+  const ip = (req.headers['x-forwarded-for'] || req.ip || '').toString().split(',')[0].trim();
+  return { browser, device, userAgent: ua, ip, location: '' };
+}
+
+function addOrUpdateSession(user, req, refreshToken) {
+  user.security = user.security || {};
+  user.security.sessions = Array.isArray(user.security.sessions) ? user.security.sessions : [];
+
+  const sessionId = crypto.randomBytes(18).toString('hex');
+  const now = new Date();
+  const info = parseSessionDevice(req);
+
+  user.security.sessions = user.security.sessions
+    .filter(s => !s.revokedAt)
+    .slice(-9);
+
+  user.security.sessions.push({
+    sessionId,
+    refreshTokenHash: tokenHash(refreshToken),
+    browser: info.browser,
+    device: info.device,
+    userAgent: info.userAgent,
+    ip: info.ip,
+    location: info.location,
+    createdAt: now,
+    lastActiveAt: now,
+    revokedAt: null
+  });
+
+  return sessionId;
+}
+
+function setSessionHeader(res, sessionId) {
+  if (sessionId) res.set('X-Paddox-Session-Id', sessionId);
+}
+
 function safeUser(user) {
   if (!user) return null;
   const obj = user.toSafeObject ? user.toSafeObject() : (user.toObject ? user.toObject() : user);
   delete obj.password;
   delete obj.refreshToken;
+  if (Array.isArray(obj.security?.sessions)) {
+    obj.security.sessions = obj.security.sessions.map(session => {
+      const clean = { ...session };
+      delete clean.refreshTokenHash;
+      return clean;
+    });
+  }
   if (obj.security?.twoFactor) {
     delete obj.security.twoFactor.codeHash;
     delete obj.security.twoFactor.codeExpires;
@@ -75,10 +135,11 @@ async function sendTwoFactorCode(user, action = 'login') {
   return code;
 }
 
-async function finishLogin(user, res, message = 'Login successful') {
+async function finishLogin(user, res, message = 'Login successful', req = null) {
   const accessToken  = generateAccessToken(user._id, user.role);
   const refreshToken = generateRefreshToken(user._id);
   user.refreshToken  = refreshToken;
+  const sessionId = req ? addOrUpdateSession(user, req, refreshToken) : '';
   user.lastLogin     = new Date();
   if (user.security?.twoFactor) {
     user.security.twoFactor.codeHash = undefined;
@@ -88,7 +149,8 @@ async function finishLogin(user, res, message = 'Login successful') {
   }
   await user.save({ validateBeforeSave:false });
   setRefreshCookie(res, refreshToken);
-  return successResponse(res, 200, message, { accessToken, user: publicAuthUser(user) });
+  setSessionHeader(res, sessionId);
+  return successResponse(res, 200, message, { accessToken, sessionId, user: publicAuthUser(user) });
 }
 
 function createTwoFactorToken(user) {
@@ -99,7 +161,7 @@ function createTwoFactorToken(user) {
   );
 }
 
-async function maybeRequireTwoFactor(user, res) {
+async function maybeRequireTwoFactor(user, res, req) {
   if (user.security?.twoFactor?.enabled) {
     await sendTwoFactorCode(user, 'login');
     return successResponse(res, 200, 'Two-factor code sent', {
@@ -108,7 +170,7 @@ async function maybeRequireTwoFactor(user, res) {
       email: user.email
     });
   }
-  return finishLogin(user, res);
+  return finishLogin(user, res, 'Login successful', req);
 }
 
 /* ── REGISTER ── */
@@ -134,10 +196,12 @@ exports.register = async (req, res, next) => {
     const accessToken  = generateAccessToken(user._id, user.role);
     const refreshToken = generateRefreshToken(user._id);
     user.refreshToken  = refreshToken;
+    const sessionId = addOrUpdateSession(user, req, refreshToken);
     user.lastLogin     = new Date();
     await user.save({ validateBeforeSave:false });
 
     setRefreshCookie(res, refreshToken);
+    setSessionHeader(res, sessionId);
 
     await sendEmail(
       user.email,
@@ -147,6 +211,7 @@ exports.register = async (req, res, next) => {
 
     successResponse(res, 201, 'Account created successfully', {
       accessToken,
+      sessionId,
       user: publicAuthUser(user),
     });
   } catch (err) { next(err); }
@@ -165,7 +230,7 @@ exports.login = async (req, res, next) => {
     const match = await user.matchPassword(password);
     if (!match)        return errorResponse(res, 401, 'Invalid credentials');
 
-    return maybeRequireTwoFactor(user, res);
+    return maybeRequireTwoFactor(user, res, req);
   } catch (err) { next(err); }
 };
 
@@ -194,7 +259,7 @@ exports.verifyTwoFactorLogin = async (req, res, next) => {
       return errorResponse(res, 400, 'Invalid verification code');
     }
 
-    return finishLogin(user, res, 'Two-factor verified');
+    return finishLogin(user, res, 'Two-factor verified', req);
   } catch (err) { next(err); }
 };
 
@@ -250,7 +315,7 @@ exports.googleLogin = async (req, res, next) => {
     }
 
     if (user.isBanned) return errorResponse(res, 403, 'Account suspended');
-    return maybeRequireTwoFactor(user, res);
+    return maybeRequireTwoFactor(user, res, req);
   } catch (err) {
     console.error('Google login failed', err.message);
     return errorResponse(res, 401, 'Google login failed');
@@ -267,25 +332,56 @@ exports.refresh = async (req, res, next) => {
     try { decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET); }
     catch { return errorResponse(res, 401, 'Invalid or expired refresh token'); }
 
-    const user = await User.findById(decoded.id).select('+refreshToken');
-    if (!user || user.refreshToken !== token) {
-      return errorResponse(res, 401, 'Refresh token mismatch — please log in again');
+    const sessionId = req.headers['x-paddox-session-id'] || req.cookies?.paddoxSessionId || '';
+    const user = await User.findById(decoded.id).select('+refreshToken +security.sessions.refreshTokenHash');
+    if (!user) return errorResponse(res, 401, 'Please log in again');
+
+    const hashed = tokenHash(token);
+    const session = (user.security?.sessions || []).find(s => {
+      const sameId = sessionId && s.sessionId === sessionId;
+      const sameToken = s.refreshTokenHash === hashed;
+      return !s.revokedAt && (sameId || sameToken);
+    });
+
+    /* Backward compatibility for accounts that logged in before session support */
+    if (!session && user.refreshToken !== token) {
+      return errorResponse(res, 401, 'Session revoked — please log in again');
     }
 
     const newAccessToken  = generateAccessToken(user._id, user.role);
     const newRefreshToken = generateRefreshToken(user._id);
     user.refreshToken     = newRefreshToken;
-    await user.save({ validateBeforeSave:false });
 
+    if (session) {
+      session.refreshTokenHash = tokenHash(newRefreshToken);
+      session.lastActiveAt = new Date();
+    }
+
+    await user.save({ validateBeforeSave:false });
     setRefreshCookie(res, newRefreshToken);
-    successResponse(res, 200, 'Token refreshed', { accessToken: newAccessToken });
+    setSessionHeader(res, session?.sessionId || sessionId || '');
+    successResponse(res, 200, 'Token refreshed', { accessToken: newAccessToken, sessionId: session?.sessionId || sessionId || '' });
   } catch (err) { next(err); }
 };
 
 /* ── LOGOUT ── */
 exports.logout = async (req, res, next) => {
   try {
-    await User.findByIdAndUpdate(req.user._id, { refreshToken:'' });
+    const sessionId = req.headers['x-paddox-session-id'] || req.cookies?.paddoxSessionId || '';
+    const refreshToken = req.cookies?.refreshToken || '';
+    const hashed = refreshToken ? tokenHash(refreshToken) : '';
+    const user = await User.findById(req.user._id).select('+security.sessions.refreshTokenHash');
+
+    if (user) {
+      (user.security?.sessions || []).forEach(session => {
+        if (!session.revokedAt && ((sessionId && session.sessionId === sessionId) || (hashed && session.refreshTokenHash === hashed))) {
+          session.revokedAt = new Date();
+        }
+      });
+      user.refreshToken = '';
+      await user.save({ validateBeforeSave:false });
+    }
+
     clearRefreshCookie(res);
     successResponse(res, 200, 'Logged out successfully');
   } catch (err) { next(err); }

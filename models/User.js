@@ -47,7 +47,19 @@ const userSchema = new mongoose.Schema({
       codeExpires  : { type:Date, select:false },
       pendingAction: { type:String, enum:['enable','disable','login',''], default:'' },
       lastVerifiedAt: Date
-    }
+    },
+    sessions: [{
+      sessionId       : { type:String, index:true },
+      refreshTokenHash: { type:String, select:false },
+      browser         : { type:String, default:'Browser' },
+      device          : { type:String, default:'Desktop' },
+      userAgent       : { type:String, default:'' },
+      ip              : { type:String, default:'' },
+      location        : { type:String, default:'' },
+      createdAt       : { type:Date, default:Date.now },
+      lastActiveAt    : { type:Date, default:Date.now },
+      revokedAt       : { type:Date, default:null }
+    }]
   },
   resetPasswordToken  : String,
   resetPasswordExpire : Date,

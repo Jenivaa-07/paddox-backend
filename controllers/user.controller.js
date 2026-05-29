@@ -24,6 +24,13 @@ function publicUser(user) {
   const obj = user.toObject ? user.toObject() : user;
   delete obj.password;
   delete obj.refreshToken;
+  if (Array.isArray(obj.security?.sessions)) {
+    obj.security.sessions = obj.security.sessions.map(session => {
+      const clean = { ...session };
+      delete clean.refreshTokenHash;
+      return clean;
+    });
+  }
   delete obj.resetPasswordToken;
   delete obj.resetPasswordExpire;
   return obj;
@@ -341,5 +348,90 @@ exports.verifyTwoFactorSetup = async (req, res) => {
     return successResponse(res, 200, `Two-factor authentication ${action === 'enable' ? 'enabled' : 'disabled'}`, { user: publicUser(fresh) });
   } catch (err) {
     return serverError(res, err, '2FA verification failed');
+  }
+};
+
+
+/* ══════════════════════════════════════
+   SECURITY — REAL SESSION MANAGEMENT
+══════════════════════════════════════ */
+function cleanSession(session, currentSessionId = '') {
+  return {
+    sessionId: session.sessionId,
+    browser: session.browser || 'Browser',
+    device: session.device || 'Desktop',
+    ip: session.ip || '',
+    location: session.location || '',
+    createdAt: session.createdAt,
+    lastActiveAt: session.lastActiveAt,
+    current: String(session.sessionId) === String(currentSessionId)
+  };
+}
+
+exports.getSecuritySessions = async (req, res) => {
+  try {
+    const currentSessionId = req.headers['x-paddox-session-id'] || '';
+    const user = await User.findById(req.user._id).select('security.sessions');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    const sessions = (user.security?.sessions || [])
+      .filter(session => !session.revokedAt)
+      .sort((a, b) => new Date(b.lastActiveAt || b.createdAt || 0) - new Date(a.lastActiveAt || a.createdAt || 0))
+      .map(session => cleanSession(session, currentSessionId));
+
+    return successResponse(res, 200, 'Sessions fetched', {
+      sessions,
+      currentSessionId,
+      activeCount: sessions.length
+    });
+  } catch (err) {
+    return serverError(res, err, 'Fetch sessions failed');
+  }
+};
+
+exports.revokeSecuritySession = async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const currentSessionId = req.headers['x-paddox-session-id'] || '';
+    if (!sessionId) return errorResponse(res, 400, 'Session id required');
+    if (String(sessionId) === String(currentSessionId)) {
+      return errorResponse(res, 400, 'Use Sign Out to end your current session');
+    }
+
+    const user = await User.findById(req.user._id).select('+security.sessions.refreshTokenHash');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    const session = (user.security?.sessions || []).find(s => String(s.sessionId) === String(sessionId));
+    if (!session || session.revokedAt) return errorResponse(res, 404, 'Session not found');
+
+    session.revokedAt = new Date();
+    session.refreshTokenHash = '';
+    await user.save({ validateBeforeSave:false });
+
+    return successResponse(res, 200, 'Session revoked', { sessionId });
+  } catch (err) {
+    return serverError(res, err, 'Revoke session failed');
+  }
+};
+
+exports.revokeOtherSecuritySessions = async (req, res) => {
+  try {
+    const currentSessionId = req.headers['x-paddox-session-id'] || '';
+    const user = await User.findById(req.user._id).select('+security.sessions.refreshTokenHash');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    let revoked = 0;
+    (user.security?.sessions || []).forEach(session => {
+      if (!session.revokedAt && String(session.sessionId) !== String(currentSessionId)) {
+        session.revokedAt = new Date();
+        session.refreshTokenHash = '';
+        revoked++;
+      }
+    });
+
+    await user.save({ validateBeforeSave:false });
+    return successResponse(res, 200, 'Other sessions revoked', { revoked });
+  } catch (err) {
+    return serverError(res, err, 'Revoke other sessions failed');
   }
 };
