@@ -18,12 +18,12 @@ const validate = (req, res, next) => {
 
 router.post('/register', authLimiter, [
   body('firstName').trim().notEmpty().withMessage('First name required'),
-  body('email').isEmail().withMessage('Valid email required').normalizeEmail(),
+  body('email').trim().isEmail().withMessage('Valid email required').toLowerCase(),
   body('password').isLength({ min:6 }).withMessage('Password min 6 characters'),
 ], validate, auth.register);
 
 router.post('/login', authLimiter, [
-  body('email').isEmail().normalizeEmail(),
+  body('email').trim().isEmail().toLowerCase(),
   body('password').notEmpty(),
 ], validate, auth.login);
 

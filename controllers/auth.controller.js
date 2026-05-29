@@ -114,7 +114,8 @@ async function maybeRequireTwoFactor(user, res) {
 /* ── REGISTER ── */
 exports.register = async (req, res, next) => {
   try {
-    const { firstName, lastName, email, password, favouriteTeam } = req.body;
+    const { firstName, lastName, password, favouriteTeam } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
     const exists = await User.findOne({ email });
     if (exists) return errorResponse(res, 400, 'Email already registered');
 
@@ -154,7 +155,8 @@ exports.register = async (req, res, next) => {
 /* ── LOGIN ── */
 exports.login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const { password } = req.body;
     if (!email || !password) return errorResponse(res, 400, 'Email and password required');
 
     const user = await User.findOne({ email }).select('+password +refreshToken +security.twoFactor.codeHash +security.twoFactor.codeExpires');
@@ -300,7 +302,8 @@ exports.getMe = async (req, res, next) => {
 /* ── FORGOT PASSWORD ── */
 exports.forgotPassword = async (req, res, next) => {
   try {
-    const user = await User.findOne({ email: req.body.email });
+    const resetEmail = String(req.body.email || '').trim().toLowerCase();
+    const user = await User.findOne({ email: resetEmail });
     if (!user) return errorResponse(res, 404, 'No account with that email');
 
     const resetToken   = crypto.randomBytes(32).toString('hex');
