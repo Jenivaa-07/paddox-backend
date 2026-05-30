@@ -1,6 +1,7 @@
 /* ============================================================
    FILE: controllers/asset.controller.js — Digital Assets
-   Phase A4.7A: Admin polish foundation + login-gated downloads
+   Phase A4.7A.2: Login-gated downloads, desktop/mobile wallpapers,
+   premium pricing foundation
    ============================================================ */
 const DigitalAsset = require('../models/DigitalAsset');
 const FanPoints    = require('../models/FanPoints');
@@ -10,58 +11,58 @@ const { successResponse, errorResponse, paginatedResponse } = require('../utils/
 
 function serverError(res, err, label = 'Server error') {
   console.error(label, err);
-  return res.status(500).json({
-    success: false,
-    message: err.message || label
-  });
+  return res.status(500).json({ success: false, message: err.message || label });
 }
 
-function fileSizeLabel(file = {}) {
-  return `${((file.size || 0) / (1024 * 1024)).toFixed(1)} MB`;
+function fileSizeLabel(size = 0) {
+  return `${((Number(size || 0)) / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function fileSnapshot(file = {}, fallbackResolution = '') {
-  if (!file) {
-    return { url: '', publicId: '', fileSize: '0 MB', resolution: fallbackResolution || '', originalName: '' };
-  }
+function normaliseAccess(value = 'free') {
+  const key = String(value || 'free').toLowerCase();
+  return key === 'premium' ? 'premium' : 'free';
+}
 
+function normaliseOrientation(value = 'desktop') {
+  const key = String(value || 'desktop').toLowerCase();
+  return ['desktop', 'mobile', 'both'].includes(key) ? key : 'desktop';
+}
+
+function cleanTags(raw = '') {
+  try {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw.map(String).map(t => t.trim()).filter(Boolean);
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map(String).map(t => t.trim()).filter(Boolean);
+  } catch (_) {}
+  return String(raw || '').split(',').map(t => t.trim()).filter(Boolean);
+}
+
+function filePayload(file, resolution = '') {
+  if (!file) return { url: '', publicId: '', fileSize: '0 MB', resolution: resolution || '' };
   return {
-    url: file.path || file.url || '',
-    publicId: file.filename || file.public_id || '',
-    fileSize: fileSizeLabel(file),
-    resolution: fallbackResolution || '',
-    originalName: file.originalname || ''
+    url: file.path || '',
+    publicId: file.filename || '',
+    fileSize: fileSizeLabel(file.size),
+    resolution: resolution || ''
   };
 }
 
-function cleanTags(value) {
-  try {
-    if (!value) return [];
-    if (Array.isArray(value)) return value.map(t => String(t).trim()).filter(Boolean);
-    if (String(value).trim().startsWith('[')) return JSON.parse(value);
-    return String(value)
-      .split(',')
-      .map(t => t.trim())
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function pickUpload(req, name) {
-  if (req.files && Array.isArray(req.files[name]) && req.files[name][0]) return req.files[name][0];
-  if (name === 'asset' && req.file) return req.file;
+function firstFile(req, fieldName) {
+  if (req.files && Array.isArray(req.files[fieldName]) && req.files[fieldName][0]) return req.files[fieldName][0];
+  if (req.file && fieldName === 'asset') return req.file;
   return null;
 }
 
 /* ── GET ALL ASSETS ── */
 exports.getAssets = async (req, res) => {
   try {
-    const { category, type, page = 1, limit = 50 } = req.query;
-
+    const { category, type, orientation, page = 1, limit = 50 } = req.query;
     const query = { isActive: true };
+
     if (category && category !== 'all') query.category = String(category).toLowerCase();
     if (type && type !== 'all') query.type = String(type).toLowerCase();
+    if (orientation && orientation !== 'all') query.orientation = String(orientation).toLowerCase();
 
     const pageNo = Number(page) || 1;
     const limitNo = Number(limit) || 50;
@@ -93,45 +94,37 @@ exports.getAsset = async (req, res) => {
 /* ── UPLOAD ASSET ── */
 exports.uploadAsset = async (req, res) => {
   try {
-    const desktopFile = pickUpload(req, 'desktopAsset') || pickUpload(req, 'asset');
-    const mobileFile = pickUpload(req, 'mobileAsset');
-    const thumbnailFile = pickUpload(req, 'thumbnail');
+    const desktopFile = firstFile(req, 'desktop') || firstFile(req, 'asset');
+    const mobileFile = firstFile(req, 'mobile');
+    const thumbFile = firstFile(req, 'thumbnail');
 
-    if (!desktopFile && !mobileFile && !thumbnailFile) {
-      return errorResponse(res, 400, 'No file uploaded');
-    }
+    if (!desktopFile && !mobileFile) return errorResponse(res, 400, 'Upload at least a desktop or mobile wallpaper');
 
-    const cover = thumbnailFile || desktopFile || mobileFile;
-    const desktopSnapshot = fileSnapshot(desktopFile, req.body.desktopResolution || req.body.resolution || 'Desktop 4K');
-    const mobileSnapshot = fileSnapshot(mobileFile, req.body.mobileResolution || 'Mobile HD');
-    const thumbnailSnapshot = fileSnapshot(thumbnailFile, 'Thumbnail');
-
-    const type = String(req.body.type || req.body.access || 'free').toLowerCase();
-    const safePrice = type === 'premium' ? Number(req.body.price || 0) : 0;
+    const access = normaliseAccess(req.body.type || req.body.access);
+    const price = access === 'premium' ? Number(req.body.price || 0) : 0;
+    const orientation = normaliseOrientation(req.body.orientation || (desktopFile && mobileFile ? 'both' : mobileFile ? 'mobile' : 'desktop'));
+    const primaryFile = thumbFile || desktopFile || mobileFile;
 
     const asset = await DigitalAsset.create({
-      name        : req.body.name || req.body.title || cover.originalname || 'Paddox Asset',
-      description : req.body.description || 'Uploaded from PADDOX admin panel',
-      category    : String(req.body.category || 'wallpaper').toLowerCase(),
-      type,
-      price       : safePrice,
-      currency    : req.body.currency || 'INR',
-      resolution  : req.body.resolution || [
-        desktopSnapshot.url ? desktopSnapshot.resolution : '',
-        mobileSnapshot.url ? mobileSnapshot.resolution : ''
-      ].filter(Boolean).join(' + ') || 'HD',
-      tags        : cleanTags(req.body.tags),
-      image       : {
-        url      : cover.path || cover.url,
-        publicId : cover.filename || cover.public_id || '',
+      name: req.body.name || req.body.title || primaryFile?.originalname || 'Paddox Wallpaper',
+      description: req.body.description || 'Uploaded from PADDOX admin panel',
+      category: String(req.body.category || 'cars').toLowerCase(),
+      type: access,
+      price,
+      orientation,
+      resolution: req.body.resolution || req.body.desktopResolution || '4K',
+      desktop: filePayload(desktopFile, req.body.desktopResolution || req.body.resolution || 'Desktop'),
+      mobile: filePayload(mobileFile, req.body.mobileResolution || 'Mobile'),
+      thumbnail: filePayload(thumbFile, 'Preview'),
+      image: {
+        url: primaryFile?.path || '',
+        publicId: primaryFile?.filename || '',
       },
-      desktopFile : desktopSnapshot,
-      mobileFile  : mobileSnapshot,
-      thumbnail   : thumbnailSnapshot,
-      fileSize    : fileSizeLabel(cover),
-      downloads   : 0,
-      isActive    : true,
-      uploadedBy  : req.user?._id || undefined,
+      fileSize: fileSizeLabel((desktopFile?.size || 0) + (mobileFile?.size || 0) + (thumbFile?.size || 0)),
+      downloads: 0,
+      tags: cleanTags(req.body.tags),
+      isActive: true,
+      uploadedBy: req.user?._id || undefined,
     });
 
     return successResponse(res, 201, 'Asset uploaded', { asset });
@@ -144,50 +137,22 @@ exports.uploadAsset = async (req, res) => {
 exports.downloadAsset = async (req, res) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
+    if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
 
-    if (!asset || !asset.isActive) {
-      return errorResponse(res, 404, 'Asset not found');
-    }
-
-    /*
-      Phase A4.7A requirement:
-      Free downloads are login-gated too. routes/asset.routes.js uses protect,
-      so req.user must exist before this controller is reached.
-    */
-    if (!req.user) {
-      return errorResponse(res, 401, 'Please login to download PADDOX wallpapers');
-    }
-
-    const format = String(req.query.format || req.body?.format || 'desktop').toLowerCase();
+    /* Phase A4.7A.2: even free wallpapers require login. */
+    if (!req.user) return errorResponse(res, 401, 'Please login to download PADDOX wallpapers');
 
     if (asset.type === 'premium') {
-      return res.status(402).json({
-        success: false,
-        premium: true,
-        message: 'Premium wallpaper purchase flow will unlock this asset',
-        asset: {
-          id: asset._id,
-          name: asset.name,
-          price: asset.price || 0,
-          currency: asset.currency || 'INR'
-        }
-      });
+      /* Payment/unlock will be completed in A4.7B. For now, block direct premium downloads. */
+      return errorResponse(res, 402, 'Premium wallpaper purchase required');
     }
 
-    const selected =
-      format === 'mobile'
-        ? (asset.mobileFile?.url ? asset.mobileFile : asset.desktopFile)
-        : (asset.desktopFile?.url ? asset.desktopFile : asset.mobileFile);
+    const format = String(req.query.format || req.body.format || 'desktop').toLowerCase();
+    const downloadUrl = asset.variantUrl(format);
 
-    const downloadUrl = selected?.url || asset.image?.url;
-
-    if (!downloadUrl) {
-      return errorResponse(res, 404, 'Download file missing');
-    }
+    if (!downloadUrl) return errorResponse(res, 404, `${format} wallpaper file not available`);
 
     asset.downloads = (asset.downloads || 0) + 1;
-    if (format === 'mobile') asset.mobileDownloads = (asset.mobileDownloads || 0) + 1;
-    else asset.desktopDownloads = (asset.desktopDownloads || 0) + 1;
     await asset.save({ validateBeforeSave: false });
 
     await FanPoints.create({
@@ -202,10 +167,7 @@ exports.downloadAsset = async (req, res) => {
       }
     }).catch(() => null);
 
-    await User.findByIdAndUpdate(
-      req.user._id,
-      { $inc: { fanPoints: 10 } }
-    ).catch(() => null);
+    await User.findByIdAndUpdate(req.user._id, { $inc: { fanPoints: 10 } }).catch(() => null);
 
     return successResponse(res, 200, 'Download authorised', {
       asset,
@@ -228,12 +190,12 @@ exports.deleteAsset = async (req, res) => {
 
     const publicIds = [
       asset.image?.publicId,
-      asset.desktopFile?.publicId,
-      asset.mobileFile?.publicId,
+      asset.desktop?.publicId,
+      asset.mobile?.publicId,
       asset.thumbnail?.publicId
     ].filter(Boolean);
 
-    if (cloudinary && publicIds.length) {
+    if (cloudinary) {
       await Promise.all(publicIds.map(id => cloudinary.uploader.destroy(id).catch(() => null)));
     }
 
@@ -248,21 +210,20 @@ exports.deleteAsset = async (req, res) => {
 exports.updateAsset = async (req, res) => {
   try {
     const asset = await DigitalAsset.findById(req.params.id);
+    if (!asset) return errorResponse(res, 404, 'Asset not found');
 
-    if (!asset) {
-      return errorResponse(res, 404, 'Asset not found');
-    }
+    const access = req.body.type !== undefined ? normaliseAccess(req.body.type) : asset.type;
 
-    if (req.body.name !== undefined) asset.name = req.body.name || asset.name;
-    if (req.body.description !== undefined) asset.description = req.body.description || '';
-    if (req.body.category !== undefined) asset.category = String(req.body.category || asset.category).toLowerCase();
-    if (req.body.type !== undefined) asset.type = String(req.body.type || asset.type).toLowerCase();
-    if (req.body.resolution !== undefined) asset.resolution = req.body.resolution || asset.resolution;
-    if (req.body.price !== undefined) asset.price = asset.type === 'premium' ? Number(req.body.price || 0) : 0;
-    if (req.body.tags !== undefined) asset.tags = cleanTags(req.body.tags);
+    asset.name = req.body.name || asset.name;
+    asset.description = req.body.description || asset.description;
+    asset.category = req.body.category || asset.category;
+    asset.type = access;
+    asset.price = access === 'premium' ? Number(req.body.price ?? asset.price ?? 0) : 0;
+    asset.orientation = req.body.orientation ? normaliseOrientation(req.body.orientation) : asset.orientation;
+    asset.resolution = req.body.resolution || asset.resolution;
+    asset.tags = req.body.tags !== undefined ? cleanTags(req.body.tags) : asset.tags;
 
     await asset.save();
-
     return successResponse(res, 200, 'Asset updated', { asset });
   } catch (err) {
     return serverError(res, err, 'Update asset failed');
