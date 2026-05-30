@@ -1,25 +1,35 @@
 /* ============================================================
    FILE: routes/asset.routes.js
+   PADDOX — Digital Asset Routes
+   Phase A4.7A: Admin-protected uploads + login-required downloads
    ============================================================ */
 const express = require('express');
 const router = express.Router();
 
 const assetController = require('../controllers/asset.controller');
 const { uploadAsset } = require('../config/cloudinary');
-const { optionalAuth } = require('../middleware/auth.middleware');
+const { protect, adminOnly } = require('../middleware/auth.middleware');
 
-/* IMPORTANT: specific routes before /:id */
+const assetUploadFields = uploadAsset.fields([
+  { name: 'asset', maxCount: 1 },
+  { name: 'desktopAsset', maxCount: 1 },
+  { name: 'mobileAsset', maxCount: 1 },
+  { name: 'thumbnail', maxCount: 1 },
+]);
+
+/* Public listing and preview */
 router.get('/', assetController.getAssets);
-router.post('/upload', uploadAsset.single('asset'), assetController.uploadAsset);
-router.post('/', uploadAsset.single('asset'), assetController.uploadAsset);
-
-/* Download must use optionalAuth so logged-in users get download history */
-router.post('/:id/download', optionalAuth, assetController.downloadAsset);
-router.get('/:id/download', optionalAuth, assetController.downloadAsset);
-router.get('/download/:id', optionalAuth, assetController.downloadAsset);
-
 router.get('/:id', assetController.getAsset);
-router.put('/:id', assetController.updateAsset);
-router.delete('/:id', assetController.deleteAsset);
+
+/* Admin asset management */
+router.post('/upload', protect, adminOnly, assetUploadFields, assetController.uploadAsset);
+router.post('/', protect, adminOnly, assetUploadFields, assetController.uploadAsset);
+router.put('/:id', protect, adminOnly, assetController.updateAsset);
+router.delete('/:id', protect, adminOnly, assetController.deleteAsset);
+
+/* Downloads require login even for free wallpapers */
+router.post('/:id/download', protect, assetController.downloadAsset);
+router.get('/:id/download', protect, assetController.downloadAsset);
+router.get('/download/:id', protect, assetController.downloadAsset);
 
 module.exports = router;
