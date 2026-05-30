@@ -31,7 +31,7 @@ router.get('/:id', assetController.getAsset);
 /* Admin asset management */
 router.post('/upload', protect, adminOnly, assetUploadFields, assetController.uploadAsset);
 router.post('/', protect, adminOnly, assetUploadFields, assetController.uploadAsset);
-router.put('/:id', protect, adminOnly, assetController.updateAsset);
+router.put('/:id', protect, adminOnly, assetUploadFields, assetController.updateAsset);
 router.delete('/:id', protect, adminOnly, assetController.deleteAsset);
 
 module.exports = router;

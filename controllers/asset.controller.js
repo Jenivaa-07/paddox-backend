@@ -214,6 +214,10 @@ exports.updateAsset = async (req, res) => {
 
     const access = req.body.type !== undefined ? normaliseAccess(req.body.type) : asset.type;
 
+    const desktopFile = firstFile(req, 'desktop') || firstFile(req, 'asset');
+    const mobileFile = firstFile(req, 'mobile');
+    const thumbFile = firstFile(req, 'thumbnail');
+
     asset.name = req.body.name || asset.name;
     asset.description = req.body.description || asset.description;
     asset.category = req.body.category || asset.category;
@@ -222,6 +226,15 @@ exports.updateAsset = async (req, res) => {
     asset.orientation = req.body.orientation ? normaliseOrientation(req.body.orientation) : asset.orientation;
     asset.resolution = req.body.resolution || asset.resolution;
     asset.tags = req.body.tags !== undefined ? cleanTags(req.body.tags) : asset.tags;
+
+    if (desktopFile) asset.desktop = filePayload(desktopFile, req.body.desktopResolution || req.body.resolution || asset.resolution || 'Desktop');
+    if (mobileFile) asset.mobile = filePayload(mobileFile, req.body.mobileResolution || 'Mobile');
+    if (thumbFile) asset.thumbnail = filePayload(thumbFile, 'Preview');
+
+    const primaryUrl = asset.thumbnail?.url || asset.desktop?.url || asset.mobile?.url || asset.image?.url || '';
+    const primaryPublicId = asset.thumbnail?.publicId || asset.desktop?.publicId || asset.mobile?.publicId || asset.image?.publicId || '';
+    asset.image = { url: primaryUrl, publicId: primaryPublicId };
+    asset.fileSize = asset.fileSize || fileSizeLabel((desktopFile?.size || 0) + (mobileFile?.size || 0) + (thumbFile?.size || 0));
 
     await asset.save();
     return successResponse(res, 200, 'Asset updated', { asset });
