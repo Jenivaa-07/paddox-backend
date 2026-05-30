@@ -21,6 +21,14 @@ const orderItemSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  originalPrice: {
+    type: Number,
+    default: 0
+  },
+  productDiscount: {
+    type: Number,
+    default: 0
+  },
   quantity: {
     type: Number,
     required: true,
@@ -89,7 +97,15 @@ const orderSchema = new mongoose.Schema({
       type: Number,
       default: 0
     },
+    productDiscount: {
+      type: Number,
+      default: 0
+    },
     discount: {
+      type: Number,
+      default: 0
+    },
+    totalDiscount: {
       type: Number,
       default: 0
     },

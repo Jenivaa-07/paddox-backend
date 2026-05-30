@@ -38,6 +38,7 @@ exports.placeOrder = async (req, res) => {
     }
 
     let subtotal = 0;
+    let productDiscount = 0;
     const orderItems = [];
 
     for (const item of items) {
@@ -63,18 +64,25 @@ exports.placeOrder = async (req, res) => {
         return errorResponse(res, 400, `Insufficient stock for: ${product.name}`);
       }
 
+      const originalPrice = Number(product.price || 0);
       const price =
         product.onSale && product.salePrice
-          ? product.salePrice
-          : product.price;
+          ? Number(product.salePrice)
+          : originalPrice;
 
-      subtotal += price * quantity;
+      const safeOriginalPrice = Math.max(originalPrice, price);
+      const itemProductDiscount = Math.max(0, safeOriginalPrice - price) * quantity;
+
+      subtotal += safeOriginalPrice * quantity;
+      productDiscount += itemProductDiscount;
 
       orderItems.push({
         product: product._id,
         name: product.name,
         image: product.images?.[0]?.url || '',
         price,
+        originalPrice: safeOriginalPrice,
+        productDiscount: itemProductDiscount,
         quantity,
         size: item.size || '',
         color: item.color || '',
@@ -98,11 +106,13 @@ exports.placeOrder = async (req, res) => {
       if (!coupon.isActive) return errorResponse(res, 400, 'Coupon is inactive');
       if (coupon.isExpired()) return errorResponse(res, 400, 'Coupon has expired');
       if (coupon.isUsageLimitReached()) return errorResponse(res, 400, 'Coupon usage limit reached');
-      if (coupon.minOrderValue && subtotal < coupon.minOrderValue) {
+      const productDiscountedSubtotal = Math.max(0, subtotal - productDiscount);
+
+      if (coupon.minOrderValue && productDiscountedSubtotal < coupon.minOrderValue) {
         return errorResponse(res, 400, `Minimum order value is ₹${coupon.minOrderValue}`);
       }
 
-      const discount = Math.max(0, Math.min(coupon.calculateDiscount(subtotal), subtotal));
+      const discount = Math.max(0, Math.min(coupon.calculateDiscount(productDiscountedSubtotal), productDiscountedSubtotal));
 
       couponSnapshot = {
         code: coupon.code,
@@ -112,8 +122,9 @@ exports.placeOrder = async (req, res) => {
       };
     }
 
-    const discountedSubtotal = Math.max(0, subtotal - couponSnapshot.discount);
-    const shipping = subtotal >= 999 ? 0 : 99;
+    const productDiscountedSubtotal = Math.max(0, subtotal - productDiscount);
+    const discountedSubtotal = Math.max(0, productDiscountedSubtotal - couponSnapshot.discount);
+    const shipping = productDiscountedSubtotal >= 999 ? 0 : 99;
     const tax = Math.round(discountedSubtotal * 0.05);
     const total = discountedSubtotal + shipping + tax;
 
@@ -159,8 +170,10 @@ exports.placeOrder = async (req, res) => {
       shippingAddress: safeShippingAddress,
       pricing: {
         subtotal,
-        shipping,
+        productDiscount,
         discount: couponSnapshot.discount,
+        totalDiscount: productDiscount + couponSnapshot.discount,
+        shipping,
         tax,
         total
       },
@@ -334,7 +347,7 @@ exports.adminGetOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('user', 'firstName lastName email')
-      .populate('items.product', 'name images slug team');
+      .populate('items.product', 'name images slug team price salePrice onSale effectivePrice');
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');
