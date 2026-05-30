@@ -7,7 +7,7 @@ const User   = require('../models/User');
 const FanPoints = require('../models/FanPoints');
 const { generateAccessToken, generateRefreshToken, setRefreshCookie, clearRefreshCookie } = require('../utils/generateToken');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
-const { sendEmail } = require('../config/brevo');
+const { sendEmail } = require('../config/resend');
 
 /* ── REGISTER ── */
 exports.register = async (req, res, next) => {
@@ -138,14 +138,20 @@ exports.forgotPassword = async (req, res, next) => {
     user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 min
     await user.save({ validateBeforeSave:false });
 
-    const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+    const resetUrl = `${(process.env.CLIENT_URL || 'https://paddox.vercel.app').replace(/\/$/, '')}/reset-password.html?token=${resetToken}`;
     let emailSent = false;
     let emailError = '';
     try {
       await sendEmail(
         user.email,
         '🔒 Paddox — Password Reset Request',
-        `<p>Click the link below to reset your password. This link expires in 10 minutes.</p><a href="${resetUrl}">${resetUrl}</a>`
+        `<div style="font-family:Arial,sans-serif;background:#080808;color:#fff;padding:28px;border-radius:14px;border:1px solid #222">
+          <div style="letter-spacing:5px;color:#e8002d;font-size:12px;font-weight:700">PADDOX SECURITY</div>
+          <h2 style="margin:10px 0 8px;font-size:26px">Reset your password</h2>
+          <p style="color:#c9c9c9;line-height:1.6">Click the secure button below to reset your password. This link expires in 10 minutes.</p>
+          <a href="${resetUrl}" style="display:inline-block;margin-top:16px;background:#e8002d;color:#fff;text-decoration:none;padding:14px 22px;font-weight:800;letter-spacing:2px;text-transform:uppercase">Reset Password</a>
+          <p style="color:#777;font-size:12px;margin-top:20px">If the button does not work, copy this link:<br>${resetUrl}</p>
+        </div>`
       );
       emailSent = true;
       console.log('PADDOX password reset email sent:', user.email);
