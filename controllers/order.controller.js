@@ -7,7 +7,6 @@
 const Order   = require('../models/Order');
 const Cart    = require('../models/Cart');
 const Product = require('../models/Product');
-const Coupon  = require('../models/Coupon');
 const FanPoints = require('../models/FanPoints');
 const User    = require('../models/User');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
@@ -22,28 +21,6 @@ function serverError(res, err, label = 'Server error') {
   });
 }
 
-
-async function createOrderWithUniqueNumber(payload, attempts = 5) {
-  let lastError = null;
-
-  for (let i = 0; i < attempts; i += 1) {
-    try {
-      return await Order.create(payload);
-    } catch (err) {
-      const duplicateOrderNumber =
-        err?.code === 11000 &&
-        (err?.keyPattern?.orderNumber || err?.keyValue?.orderNumber);
-
-      if (!duplicateOrderNumber) throw err;
-
-      lastError = err;
-      console.warn('Duplicate order number detected. Retrying with next sequence...', err.keyValue);
-    }
-  }
-
-  throw lastError || new Error('Order number generation failed');
-}
-
 /* ── PLACE ORDER ── */
 exports.placeOrder = async (req, res) => {
   try {
@@ -51,8 +28,7 @@ exports.placeOrder = async (req, res) => {
       items,
       shippingAddress = {},
       paymentMethod = 'upi',
-      notes = '',
-      couponCode = ''
+      notes = ''
     } = req.body;
 
     if (!items || !Array.isArray(items) || !items.length) {
@@ -60,7 +36,6 @@ exports.placeOrder = async (req, res) => {
     }
 
     let subtotal = 0;
-    let productDiscount = 0;
     const orderItems = [];
 
     for (const item of items) {
@@ -86,25 +61,18 @@ exports.placeOrder = async (req, res) => {
         return errorResponse(res, 400, `Insufficient stock for: ${product.name}`);
       }
 
-      const originalPrice = Number(product.price || 0);
       const price =
         product.onSale && product.salePrice
-          ? Number(product.salePrice)
-          : originalPrice;
+          ? product.salePrice
+          : product.price;
 
-      const safeOriginalPrice = Math.max(originalPrice, price);
-      const itemProductDiscount = Math.max(0, safeOriginalPrice - price) * quantity;
-
-      subtotal += safeOriginalPrice * quantity;
-      productDiscount += itemProductDiscount;
+      subtotal += price * quantity;
 
       orderItems.push({
         product: product._id,
         name: product.name,
         image: product.images?.[0]?.url || '',
         price,
-        originalPrice: safeOriginalPrice,
-        productDiscount: itemProductDiscount,
         quantity,
         size: item.size || '',
         color: item.color || '',
@@ -112,43 +80,9 @@ exports.placeOrder = async (req, res) => {
       });
     }
 
-    let couponSnapshot = {
-      code: '',
-      type: '',
-      value: 0,
-      discount: 0
-    };
-
-    const requestedCouponCode = String(couponCode || '').trim().toUpperCase();
-
-    if (requestedCouponCode) {
-      const coupon = await Coupon.findOne({ code: requestedCouponCode });
-
-      if (!coupon) return errorResponse(res, 404, 'Invalid coupon code');
-      if (!coupon.isActive) return errorResponse(res, 400, 'Coupon is inactive');
-      if (coupon.isExpired()) return errorResponse(res, 400, 'Coupon has expired');
-      if (coupon.isUsageLimitReached()) return errorResponse(res, 400, 'Coupon usage limit reached');
-      const productDiscountedSubtotal = Math.max(0, subtotal - productDiscount);
-
-      if (coupon.minOrderValue && productDiscountedSubtotal < coupon.minOrderValue) {
-        return errorResponse(res, 400, `Minimum order value is ₹${coupon.minOrderValue}`);
-      }
-
-      const discount = Math.max(0, Math.min(coupon.calculateDiscount(productDiscountedSubtotal), productDiscountedSubtotal));
-
-      couponSnapshot = {
-        code: coupon.code,
-        type: coupon.type,
-        value: Number(coupon.value || 0),
-        discount
-      };
-    }
-
-    const productDiscountedSubtotal = Math.max(0, subtotal - productDiscount);
-    const discountedSubtotal = Math.max(0, productDiscountedSubtotal - couponSnapshot.discount);
-    const shipping = productDiscountedSubtotal >= 999 ? 0 : 99;
-    const tax = Math.round(discountedSubtotal * 0.05);
-    const total = discountedSubtotal + shipping + tax;
+    const shipping = subtotal >= 999 ? 0 : 99;
+    const tax = Math.round(subtotal * 0.05);
+    const total = subtotal + shipping + tax;
 
     const safeShippingAddress = {
       name: String(shippingAddress.name || '').trim(),
@@ -186,20 +120,16 @@ exports.placeOrder = async (req, res) => {
       ? requestedPaymentMethod
       : 'upi';
 
-    const order = await createOrderWithUniqueNumber({
+    const order = await Order.create({
       user: req.user._id,
       items: orderItems,
       shippingAddress: safeShippingAddress,
       pricing: {
         subtotal,
-        productDiscount,
-        discount: couponSnapshot.discount,
-        totalDiscount: productDiscount + couponSnapshot.discount,
         shipping,
         tax,
         total
       },
-      coupon: couponSnapshot,
       payment: {
         method: normalisedPaymentMethod,
         status: normalisedPaymentMethod === 'cod' ? 'pending' : 'paid',
@@ -210,17 +140,6 @@ exports.placeOrder = async (req, res) => {
       },
       notes
     });
-
-    if (couponSnapshot.code) {
-      try {
-        await Coupon.findOneAndUpdate(
-          { code: couponSnapshot.code },
-          { $inc: { usedCount: 1 } }
-        );
-      } catch (err) {
-        console.warn('Coupon usage update failed:', err.message);
-      }
-    }
 
     /* Deduct stock */
     for (const item of orderItems) {
@@ -254,19 +173,6 @@ exports.placeOrder = async (req, res) => {
         req.user._id,
         { $inc: { fanPoints: pointsEarned } }
       );
-
-      try {
-        getIO().to(`user:${req.user._id}`).emit('fan:points-update', {
-          points: pointsEarned,
-          delta: pointsEarned,
-          reason: 'purchase',
-          ref: `purchase-${order._id}`,
-          orderId: order._id,
-          orderNumber: order.orderNumber
-        });
-      } catch (socketErr) {
-        console.warn('Fan points socket notify failed:', socketErr.message);
-      }
     } catch (err) {
       console.warn('Fan points failed:', err.message);
       pointsEarned = 0;
@@ -279,7 +185,6 @@ exports.placeOrder = async (req, res) => {
           `🏁 Paddox Order Confirmed — #${order.orderNumber}`,
           `<h2>Order Confirmed!</h2>
            <p>Your order <strong>#${order.orderNumber}</strong> has been placed.</p>
-           ${couponSnapshot.code ? `<p>Coupon <strong>${couponSnapshot.code}</strong> saved you ₹${couponSnapshot.discount.toLocaleString('en-IN')}.</p>` : ''}
            <p>Total: ₹${total.toLocaleString('en-IN')}</p>`
         );
       }
@@ -324,8 +229,7 @@ exports.getMyOrders = async (req, res) => {
       .sort('-createdAt')
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit))
-      .populate('items.product', 'name images slug')
-      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
+      .populate('items.product', 'name images slug');
 
     return paginatedResponse(
       res,
@@ -346,8 +250,7 @@ exports.getOrder = async (req, res) => {
     const order = await Order.findOne({
       _id: req.params.id,
       user: req.user._id
-    }).populate('items.product', 'name images slug team')
-      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
+    }).populate('items.product', 'name images slug team');
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');
@@ -371,8 +274,7 @@ exports.adminGetOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('user', 'firstName lastName email')
-      .populate('items.product', 'name images slug team price salePrice onSale effectivePrice')
-      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
+      .populate('items.product', 'name images slug team');
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');
