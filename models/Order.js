@@ -103,6 +103,30 @@ const orderSchema = new mongoose.Schema({
     }
   },
 
+
+
+  coupon: {
+    code: {
+      type: String,
+      uppercase: true,
+      trim: true,
+      default: ''
+    },
+    type: {
+      type: String,
+      enum: ['percent', 'fixed', ''],
+      default: ''
+    },
+    value: {
+      type: Number,
+      default: 0
+    },
+    discount: {
+      type: Number,
+      default: 0
+    }
+  },
+
   payment: {
     method: {
       type: String,

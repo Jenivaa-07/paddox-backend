@@ -7,6 +7,7 @@
 const Order   = require('../models/Order');
 const Cart    = require('../models/Cart');
 const Product = require('../models/Product');
+const Coupon  = require('../models/Coupon');
 const FanPoints = require('../models/FanPoints');
 const User    = require('../models/User');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
@@ -28,7 +29,8 @@ exports.placeOrder = async (req, res) => {
       items,
       shippingAddress = {},
       paymentMethod = 'upi',
-      notes = ''
+      notes = '',
+      couponCode = ''
     } = req.body;
 
     if (!items || !Array.isArray(items) || !items.length) {
@@ -80,9 +82,40 @@ exports.placeOrder = async (req, res) => {
       });
     }
 
+    let couponSnapshot = {
+      code: '',
+      type: '',
+      value: 0,
+      discount: 0
+    };
+
+    const requestedCouponCode = String(couponCode || '').trim().toUpperCase();
+
+    if (requestedCouponCode) {
+      const coupon = await Coupon.findOne({ code: requestedCouponCode });
+
+      if (!coupon) return errorResponse(res, 404, 'Invalid coupon code');
+      if (!coupon.isActive) return errorResponse(res, 400, 'Coupon is inactive');
+      if (coupon.isExpired()) return errorResponse(res, 400, 'Coupon has expired');
+      if (coupon.isUsageLimitReached()) return errorResponse(res, 400, 'Coupon usage limit reached');
+      if (coupon.minOrderValue && subtotal < coupon.minOrderValue) {
+        return errorResponse(res, 400, `Minimum order value is ₹${coupon.minOrderValue}`);
+      }
+
+      const discount = Math.max(0, Math.min(coupon.calculateDiscount(subtotal), subtotal));
+
+      couponSnapshot = {
+        code: coupon.code,
+        type: coupon.type,
+        value: Number(coupon.value || 0),
+        discount
+      };
+    }
+
+    const discountedSubtotal = Math.max(0, subtotal - couponSnapshot.discount);
     const shipping = subtotal >= 999 ? 0 : 99;
-    const tax = Math.round(subtotal * 0.05);
-    const total = subtotal + shipping + tax;
+    const tax = Math.round(discountedSubtotal * 0.05);
+    const total = discountedSubtotal + shipping + tax;
 
     const safeShippingAddress = {
       name: String(shippingAddress.name || '').trim(),
@@ -127,9 +160,11 @@ exports.placeOrder = async (req, res) => {
       pricing: {
         subtotal,
         shipping,
+        discount: couponSnapshot.discount,
         tax,
         total
       },
+      coupon: couponSnapshot,
       payment: {
         method: normalisedPaymentMethod,
         status: normalisedPaymentMethod === 'cod' ? 'pending' : 'paid',
@@ -140,6 +175,17 @@ exports.placeOrder = async (req, res) => {
       },
       notes
     });
+
+    if (couponSnapshot.code) {
+      try {
+        await Coupon.findOneAndUpdate(
+          { code: couponSnapshot.code },
+          { $inc: { usedCount: 1 } }
+        );
+      } catch (err) {
+        console.warn('Coupon usage update failed:', err.message);
+      }
+    }
 
     /* Deduct stock */
     for (const item of orderItems) {
@@ -198,6 +244,7 @@ exports.placeOrder = async (req, res) => {
           `🏁 Paddox Order Confirmed — #${order.orderNumber}`,
           `<h2>Order Confirmed!</h2>
            <p>Your order <strong>#${order.orderNumber}</strong> has been placed.</p>
+           ${couponSnapshot.code ? `<p>Coupon <strong>${couponSnapshot.code}</strong> saved you ₹${couponSnapshot.discount.toLocaleString('en-IN')}.</p>` : ''}
            <p>Total: ₹${total.toLocaleString('en-IN')}</p>`
         );
       }
