@@ -151,10 +151,25 @@ router.post(
   pickHandler(['sendTwoFactorCode', 'send2FACode', 'send2faCode'], '2FA send')
 );
 
+const verifyTwoFactorRouteHandler = pickHandler(['verifyTwoFactorCode', 'verify2FACode', 'verify2faCode'], '2FA verify');
+
 router.post(
   '/security/2fa/verify',
   protect,
-  pickHandler(['verifyTwoFactorCode', 'verify2FACode', 'verify2faCode'], '2FA verify')
+  verifyTwoFactorRouteHandler
+);
+
+/* Frontend Security page sends PUT, so keep POST + PUT + PATCH aliases. */
+router.put(
+  '/security/2fa/verify',
+  protect,
+  verifyTwoFactorRouteHandler
+);
+
+router.patch(
+  '/security/2fa/verify',
+  protect,
+  verifyTwoFactorRouteHandler
 );
 
 router.get(
