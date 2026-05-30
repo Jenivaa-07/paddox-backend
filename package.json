@@ -32,7 +32,6 @@
     "multer": "^2.1.1",
     "multer-storage-cloudinary": "^4.0.0",
     "razorpay": "^2.9.6",
-    "resend": "^6.12.3",
     "slugify": "^1.6.9",
     "socket.io": "^4.8.3"
   },

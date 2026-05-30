@@ -10,7 +10,7 @@ const Product = require('../models/Product');
 const FanPoints = require('../models/FanPoints');
 const User    = require('../models/User');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
-const { sendEmail } = require('../config/resend');
+const { sendEmail } = require('../config/brevo');
 const { getIO }     = require('../config/socket');
 
 function serverError(res, err, label = 'Server error') {

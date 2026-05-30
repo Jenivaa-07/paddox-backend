@@ -7,7 +7,7 @@ const User   = require('../models/User');
 const FanPoints = require('../models/FanPoints');
 const { generateAccessToken, generateRefreshToken, setRefreshCookie, clearRefreshCookie } = require('../utils/generateToken');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
-const { sendEmail } = require('../config/resend');
+const { sendEmail } = require('../config/brevo');
 
 /* ── REGISTER ── */
 exports.register = async (req, res, next) => {
