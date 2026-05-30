@@ -355,6 +355,66 @@ exports.updateProduct = async (req, res) => {
   }
 };
 
+
+/* ── UPDATE STOCK ONLY — Admin Inventory ── */
+exports.updateProductStock = async (req, res) => {
+  try {
+    const stock = Number(req.body.stock);
+
+    if (!Number.isFinite(stock) || stock < 0) {
+      return errorResponse(res, 400, 'Valid stock quantity required');
+    }
+
+    const update = { stock };
+
+    if (req.body.lowStockThreshold !== undefined) {
+      const lowStockThreshold = Number(req.body.lowStockThreshold);
+      if (!Number.isFinite(lowStockThreshold) || lowStockThreshold < 0) {
+        return errorResponse(res, 400, 'Valid low stock threshold required');
+      }
+      update.lowStockThreshold = lowStockThreshold;
+    }
+
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      update,
+      { new: true, runValidators: true }
+    ).select('-__v');
+
+    if (!product) return errorResponse(res, 404, 'Product not found');
+
+    return successResponse(res, 200, 'Stock updated', { product });
+
+  } catch (err) {
+    return serverError(res, err, 'Update stock failed');
+  }
+};
+
+/* ── BULK RESTOCK LOW / OUT OF STOCK PRODUCTS — Admin Inventory ── */
+exports.restockLowProducts = async (req, res) => {
+  try {
+    const targetStock = Math.max(0, Number(req.body.targetStock || 30));
+    const threshold = Math.max(0, Number(req.body.threshold || 10));
+
+    if (!Number.isFinite(targetStock) || targetStock <= threshold) {
+      return errorResponse(res, 400, 'Target stock must be greater than threshold');
+    }
+
+    const result = await Product.updateMany(
+      { stock: { $lte: threshold } },
+      { $set: { stock: targetStock } }
+    );
+
+    return successResponse(res, 200, 'Low stock products restocked', {
+      modifiedCount: result.modifiedCount || 0,
+      matchedCount: result.matchedCount || 0
+    });
+
+  } catch (err) {
+    return serverError(res, err, 'Bulk restock failed');
+  }
+};
+
 /* ── DELETE PRODUCT ── */
 exports.deleteProduct = async (req, res) => {
   try {

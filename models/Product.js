@@ -23,6 +23,7 @@ const productSchema = new mongoose.Schema({
   sizes       : [{ type:String, enum:['XS','S','M','L','XL','XXL','One Size'] }],
   colors      : [String],
   stock       : { type:Number, required:true, default:0, min:0 },
+  lowStockThreshold: { type:Number, default:10, min:0 },
   isLimited   : { type:Boolean, default:false },
   isActive    : { type:Boolean, default:true },
   isFeatured  : { type:Boolean, default:false },

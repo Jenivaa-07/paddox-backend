@@ -40,6 +40,10 @@ const productImages = productUpload.array('images', 10);
 /* GET ALL */
 router.get('/', productController.getProducts);
 
+/* ADMIN INVENTORY STOCK CONTROL */
+router.patch('/admin/:id/stock', protect, adminOnly, productController.updateProductStock);
+router.post('/admin/inventory/restock-low', protect, adminOnly, productController.restockLowProducts);
+
 /* GET SINGLE */
 router.get('/:id', productController.getProduct);
 
