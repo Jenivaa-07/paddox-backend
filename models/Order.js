@@ -5,6 +5,7 @@
    ============================================================ */
 
 const mongoose = require('mongoose');
+const Counter = require('./Counter');
 
 const orderItemSchema = new mongoose.Schema({
   product: {
@@ -194,18 +195,44 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 /* Auto-generate order number
-   IMPORTANT:
-   Do NOT use next() here.
-   Mongoose async middleware returns automatically.
+   Uses an atomic counter instead of countDocuments().
+   This prevents duplicate order numbers like PDX-00006 when
+   orders are deleted, created quickly, or placed concurrently.
 */
 orderSchema.pre('save', async function () {
   if (!this.isNew) return;
 
   if (!this.orderNumber) {
-    const count = await mongoose.model('Order').countDocuments();
+    let counter = await Counter.findOneAndUpdate(
+      { key: 'orders' },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
 
-    this.orderNumber =
-      `PDX-${String(count + 1).padStart(5, '0')}`;
+    /* First install safety:
+       If the counter is new but old orders already exist,
+       jump the counter above the latest existing PDX number. */
+    if (Number(counter.seq || 0) === 1) {
+      const latestOrder = await mongoose.model('Order')
+        .findOne({ orderNumber: /^PDX-\d+$/ })
+        .sort({ orderNumber: -1 })
+        .select('orderNumber')
+        .lean();
+
+      const latestNumber = latestOrder?.orderNumber
+        ? Number(String(latestOrder.orderNumber).replace('PDX-', ''))
+        : 0;
+
+      if (Number.isFinite(latestNumber) && latestNumber >= counter.seq) {
+        counter = await Counter.findOneAndUpdate(
+          { key: 'orders' },
+          { $max: { seq: latestNumber + 1 } },
+          { new: true, upsert: true }
+        );
+      }
+    }
+
+    this.orderNumber = `PDX-${String(counter.seq).padStart(5, '0')}`;
   }
 
   if (!Array.isArray(this.statusHistory)) {

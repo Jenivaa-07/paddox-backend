@@ -22,6 +22,28 @@ function serverError(res, err, label = 'Server error') {
   });
 }
 
+
+async function createOrderWithUniqueNumber(payload, attempts = 5) {
+  let lastError = null;
+
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await Order.create(payload);
+    } catch (err) {
+      const duplicateOrderNumber =
+        err?.code === 11000 &&
+        (err?.keyPattern?.orderNumber || err?.keyValue?.orderNumber);
+
+      if (!duplicateOrderNumber) throw err;
+
+      lastError = err;
+      console.warn('Duplicate order number detected. Retrying with next sequence...', err.keyValue);
+    }
+  }
+
+  throw lastError || new Error('Order number generation failed');
+}
+
 /* ── PLACE ORDER ── */
 exports.placeOrder = async (req, res) => {
   try {
@@ -164,7 +186,7 @@ exports.placeOrder = async (req, res) => {
       ? requestedPaymentMethod
       : 'upi';
 
-    const order = await Order.create({
+    const order = await createOrderWithUniqueNumber({
       user: req.user._id,
       items: orderItems,
       shippingAddress: safeShippingAddress,
