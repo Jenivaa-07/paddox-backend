@@ -65,19 +65,21 @@ const resetPasswordHandler = ensureHandler('resetPassword', (req, res) => res.st
 router.post('/register', authLimiter, [
   body('firstName').optional().trim(),
   body('name').optional().trim(),
-  body('email').isEmail().withMessage('Valid email required').trim(),
+  body('email').isEmail().withMessage('Valid email required'),
   body('password').isLength({ min: 6 }).withMessage('Password min 6 characters'),
 ], validate, registerHandler);
 
 router.post('/login', authLimiter, [
-  body('email').isEmail().withMessage('Valid email required').trim(),
+  body('email').isEmail().withMessage('Valid email required'),
   body('password').notEmpty(),
 ], validate, loginHandler);
 
 router.post('/refresh', refreshHandler);
 router.post('/logout', protect, logoutHandler);
 router.get('/me', protect, getMeHandler);
-router.post('/forgot-password', authLimiter, forgotPasswordHandler);
+router.post('/forgot-password', authLimiter, [
+  body('email').isEmail().withMessage('Valid email required'),
+], validate, forgotPasswordHandler);
 router.post('/reset-password/:token', resetPasswordHandler);
 
 module.exports = router;
