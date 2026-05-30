@@ -188,3 +188,106 @@ exports.resetPassword = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+
+/* ── GOOGLE LOGIN CONFIG ── */
+exports.googleConfig = async (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID || '';
+  return successResponse(res, 200, clientId ? 'Google login configured' : 'Google login not configured', {
+    clientId
+  });
+};
+
+/* ── GOOGLE LOGIN ── */
+exports.googleLogin = async (req, res, next) => {
+  try {
+    const credential = String(req.body.credential || '').trim();
+    const clientId = process.env.GOOGLE_CLIENT_ID || '';
+
+    if (!clientId) return errorResponse(res, 500, 'Google login is not configured on backend');
+    if (!credential) return errorResponse(res, 400, 'Google credential missing');
+
+    const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    const profile = await verifyRes.json().catch(() => ({}));
+
+    if (!verifyRes.ok || profile.error_description || !profile.email) {
+      return errorResponse(res, 401, profile.error_description || 'Invalid Google credential');
+    }
+
+    if (String(profile.aud || '') !== String(clientId)) {
+      return errorResponse(res, 401, 'Google client mismatch');
+    }
+
+    const emailVerified = profile.email_verified === true || profile.email_verified === 'true';
+    if (!emailVerified) return errorResponse(res, 401, 'Google email is not verified');
+
+    const email = String(profile.email || '').trim().toLowerCase();
+    const givenName = String(profile.given_name || profile.name || 'Paddox').trim();
+    const familyName = String(profile.family_name || '').trim();
+
+    let user = await User.findOne({ email }).select('+refreshToken');
+    let isNewUser = false;
+
+    if (!user) {
+      isNewUser = true;
+      user = await User.create({
+        firstName: givenName || 'Paddox',
+        lastName: familyName || 'Fan',
+        email,
+        password: crypto.randomBytes(32).toString('hex'),
+        avatar: profile.picture ? { url: profile.picture, publicId: '' } : undefined,
+        preferences: { favouriteTeam: '' }
+      });
+
+      try {
+        await FanPoints.create({ user:user._id, action:'purchase', points:100, meta:{ note:'Google signup welcome bonus' } });
+        user.fanPoints = (user.fanPoints || 0) + 100;
+        if (typeof user.updateFanTier === 'function') user.updateFanTier();
+      } catch (pointsErr) {
+        console.warn('Google signup fan points failed:', pointsErr.message);
+      }
+    } else if (profile.picture && !user.avatar?.url) {
+      user.avatar = { url: profile.picture, publicId: '' };
+    }
+
+    if (user.isBanned) return errorResponse(res, 403, 'Account suspended');
+
+    const accessToken  = generateAccessToken(user._id, user.role);
+    const refreshToken = generateRefreshToken(user._id);
+    user.refreshToken = refreshToken;
+    user.lastLogin = new Date();
+    await user.save({ validateBeforeSave:false });
+
+    setRefreshCookie(res, refreshToken);
+
+    if (isNewUser) {
+      try {
+        await sendEmail(
+          user.email,
+          '🏁 Welcome to PADDOX — Google Sign-In Connected',
+          `<div style="font-family:Arial,sans-serif;background:#080808;color:#fff;padding:28px;border-radius:14px;border:1px solid #222">
+            <div style="letter-spacing:5px;color:#e8002d;font-size:12px;font-weight:700">PADDOX</div>
+            <h2 style="margin:10px 0 8px;font-size:26px">Welcome, ${user.firstName}!</h2>
+            <p style="color:#c9c9c9;line-height:1.6">Your PADDOX fan account is ready. Explore premium motorsport merch, Fan Hub wallpapers, and account downloads.</p>
+          </div>`
+        );
+        console.log('PADDOX Google welcome email sent:', user.email);
+      } catch (mailErr) {
+        console.warn('Google welcome email failed:', mailErr.message);
+      }
+    }
+
+    return successResponse(res, 200, isNewUser ? 'Google account created' : 'Google login successful', {
+      accessToken,
+      user: {
+        id:user._id,
+        firstName:user.firstName,
+        lastName:user.lastName,
+        email:user.email,
+        role:user.role,
+        avatar:user.avatar?.url,
+        fanPoints:user.fanPoints,
+        fanTier:user.fanTier
+      }
+    });
+  } catch (err) { next(err); }
+};
