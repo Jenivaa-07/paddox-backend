@@ -11,7 +11,26 @@ const orderItemSchema = new mongoose.Schema({
   product: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Product',
-    required: true
+    required: false
+  },
+  asset: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'DigitalAsset',
+    required: false
+  },
+  itemType: {
+    type: String,
+    enum: ['product', 'digital'],
+    default: 'product'
+  },
+  format: {
+    type: String,
+    enum: ['desktop', 'mobile', ''],
+    default: ''
+  },
+  downloadUrl: {
+    type: String,
+    default: ''
   },
   name: {
     type: String,
@@ -55,6 +74,12 @@ const orderSchema = new mongoose.Schema({
   items: {
     type: [orderItemSchema],
     required: true
+  },
+
+  orderType: {
+    type: String,
+    enum: ['merchandise', 'digital'],
+    default: 'merchandise'
   },
 
   shippingAddress: {

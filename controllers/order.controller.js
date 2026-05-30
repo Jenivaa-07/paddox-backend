@@ -324,7 +324,8 @@ exports.getMyOrders = async (req, res) => {
       .sort('-createdAt')
       .skip((Number(page) - 1) * Number(limit))
       .limit(Number(limit))
-      .populate('items.product', 'name images slug');
+      .populate('items.product', 'name images slug')
+      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
 
     return paginatedResponse(
       res,
@@ -345,7 +346,8 @@ exports.getOrder = async (req, res) => {
     const order = await Order.findOne({
       _id: req.params.id,
       user: req.user._id
-    }).populate('items.product', 'name images slug team');
+    }).populate('items.product', 'name images slug team')
+      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');
@@ -369,7 +371,8 @@ exports.adminGetOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
       .populate('user', 'firstName lastName email')
-      .populate('items.product', 'name images slug team price salePrice onSale effectivePrice');
+      .populate('items.product', 'name images slug team price salePrice onSale effectivePrice')
+      .populate('items.asset', 'name image thumbnail desktop mobile category type price orientation resolution downloads fileSize');
 
     if (!order) {
       return errorResponse(res, 404, 'Order not found');

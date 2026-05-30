@@ -4,10 +4,12 @@
    premium pricing foundation
    ============================================================ */
 const DigitalAsset = require('../models/DigitalAsset');
+const Order        = require('../models/Order');
 const FanPoints    = require('../models/FanPoints');
 const User         = require('../models/User');
 const { cloudinary } = require('../config/cloudinary');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
+const { sendEmail } = require('../config/resend');
 
 function serverError(res, err, label = 'Server error') {
   console.error(label, err);
@@ -133,6 +135,138 @@ exports.uploadAsset = async (req, res) => {
   }
 };
 
+
+function userDisplayName(user = {}) {
+  return [user.firstName, user.lastName].filter(Boolean).join(' ').trim() ||
+    user.name ||
+    (user.email ? String(user.email).split('@')[0] : 'PADDOX Fan');
+}
+
+async function findPaidDigitalOrder(userId, assetId) {
+  return Order.findOne({
+    user: userId,
+    orderType: 'digital',
+    'items.asset': assetId,
+    'payment.status': 'paid',
+    status: { $ne: 'cancelled' }
+  }).sort('-createdAt');
+}
+
+function digitalReceiptEmail({ user, asset, order, format, downloadUrl }) {
+  const name = userDisplayName(user);
+  const amount = Number(order?.pricing?.total || asset.price || 0).toLocaleString('en-IN');
+  const orderNo = order?.orderNumber || order?._id;
+  return `
+    <div style="font-family:Inter,Arial,sans-serif;background:#080808;color:#ffffff;padding:24px">
+      <div style="max-width:640px;margin:auto;border:1px solid rgba(232,0,45,.35);background:#111;padding:24px">
+        <p style="color:#e8002d;letter-spacing:3px;text-transform:uppercase;font-size:12px;font-weight:700">PADDOX Digital Vault</p>
+        <h2 style="margin:0 0 10px;font-size:28px;letter-spacing:1px">Wallpaper Unlocked</h2>
+        <p>Hi ${name}, your premium PADDOX wallpaper purchase is confirmed.</p>
+        <table style="width:100%;margin:18px 0;border-collapse:collapse;color:#fff">
+          <tr><td style="padding:8px;border-bottom:1px solid #222;color:#aaa">Asset</td><td style="padding:8px;border-bottom:1px solid #222;text-align:right"><strong>${asset.name}</strong></td></tr>
+          <tr><td style="padding:8px;border-bottom:1px solid #222;color:#aaa">Format</td><td style="padding:8px;border-bottom:1px solid #222;text-align:right;text-transform:uppercase"><strong>${format}</strong></td></tr>
+          <tr><td style="padding:8px;border-bottom:1px solid #222;color:#aaa">Order</td><td style="padding:8px;border-bottom:1px solid #222;text-align:right"><strong>#${orderNo}</strong></td></tr>
+          <tr><td style="padding:8px;color:#aaa">Total Paid</td><td style="padding:8px;text-align:right;color:#e8002d;font-size:20px"><strong>₹${amount}</strong></td></tr>
+        </table>
+        <p style="color:#aaa">You can download this wallpaper again anytime from Account → Downloads.</p>
+        <p><a href="${downloadUrl}" style="display:inline-block;background:#e8002d;color:#fff;text-decoration:none;padding:12px 18px;font-weight:800;letter-spacing:1px;text-transform:uppercase">Download Wallpaper</a></p>
+      </div>
+    </div>`;
+}
+
+/* ── PURCHASE / UNLOCK PREMIUM ASSET ── */
+exports.purchaseAsset = async (req, res) => {
+  try {
+    const asset = await DigitalAsset.findById(req.params.id);
+    if (!asset || !asset.isActive) return errorResponse(res, 404, 'Asset not found');
+    if (!req.user) return errorResponse(res, 401, 'Please login to unlock PADDOX wallpapers');
+
+    const format = String(req.body.format || req.query.format || 'desktop').toLowerCase() === 'mobile' ? 'mobile' : 'desktop';
+    const downloadUrl = asset.variantUrl(format);
+    if (!downloadUrl) return errorResponse(res, 404, `${format} wallpaper file not available`);
+
+    if (asset.type !== 'premium') {
+      return successResponse(res, 200, 'Free wallpaper does not need purchase', { asset, format, downloadUrl, url: downloadUrl });
+    }
+
+    let order = await findPaidDigitalOrder(req.user._id, asset._id);
+
+    if (!order) {
+      const amount = Math.max(0, Number(asset.price || 0));
+      const displayName = userDisplayName(req.user);
+
+      order = await Order.create({
+        user: req.user._id,
+        orderType: 'digital',
+        items: [{
+          asset: asset._id,
+          itemType: 'digital',
+          name: asset.name,
+          image: asset.thumbnail?.url || asset.image?.url || asset.desktop?.url || asset.mobile?.url || '',
+          price: amount,
+          originalPrice: amount,
+          productDiscount: 0,
+          quantity: 1,
+          format,
+          downloadUrl
+        }],
+        shippingAddress: {
+          name: displayName,
+          line1: 'Digital delivery — PADDOX account download',
+          line2: '',
+          city: 'Online',
+          state: 'Digital',
+          pincode: '000000',
+          country: 'India',
+          phone: 'Digital order'
+        },
+        pricing: {
+          subtotal: amount,
+          shipping: 0,
+          productDiscount: 0,
+          discount: 0,
+          totalDiscount: 0,
+          tax: 0,
+          total: amount
+        },
+        payment: {
+          method: req.body.paymentMethod || 'upi',
+          status: 'paid',
+          razorpayPaymentId: `PDX-DIG-${Date.now()}`,
+          paidAt: new Date()
+        },
+        status: 'delivered',
+        statusHistory: [{ status: 'delivered', message: 'Premium digital wallpaper unlocked' }],
+        notes: `Premium digital wallpaper unlock: ${asset.name} (${format})`
+      });
+
+      try {
+        if (req.user?.email) {
+          await sendEmail(
+            req.user.email,
+            `🏁 PADDOX Wallpaper Unlocked — #${order.orderNumber}`,
+            digitalReceiptEmail({ user: req.user, asset, order, format, downloadUrl })
+          );
+        }
+      } catch (mailErr) {
+        console.warn('Digital receipt email failed:', mailErr.message);
+      }
+    }
+
+    return successResponse(res, 201, 'Premium wallpaper unlocked', {
+      order,
+      asset,
+      format,
+      downloadUrl,
+      url: downloadUrl,
+      receiptUrl: `receipt.html?orderId=${order._id}`,
+      alreadyUnlocked: !!order
+    });
+  } catch (err) {
+    return serverError(res, err, 'Purchase asset failed');
+  }
+};
+
 /* ── DOWNLOAD ASSET ── */
 exports.downloadAsset = async (req, res) => {
   try {
@@ -142,12 +276,15 @@ exports.downloadAsset = async (req, res) => {
     /* Phase A4.7A.2: even free wallpapers require login. */
     if (!req.user) return errorResponse(res, 401, 'Please login to download PADDOX wallpapers');
 
+    const format = String(req.query.format || req.body.format || 'desktop').toLowerCase();
+
     if (asset.type === 'premium') {
-      /* Payment/unlock will be completed in A4.7B. For now, block direct premium downloads. */
-      return errorResponse(res, 402, 'Premium wallpaper purchase required');
+      const unlockedOrder = await findPaidDigitalOrder(req.user._id, asset._id);
+      if (!unlockedOrder) {
+        return errorResponse(res, 402, 'Premium wallpaper purchase required');
+      }
     }
 
-    const format = String(req.query.format || req.body.format || 'desktop').toLowerCase();
     const downloadUrl = asset.variantUrl(format);
 
     if (!downloadUrl) return errorResponse(res, 404, `${format} wallpaper file not available`);

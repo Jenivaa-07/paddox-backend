@@ -20,6 +20,9 @@ const assetUploadFields = uploadAsset.fields([
 /* Public listing */
 router.get('/', assetController.getAssets);
 
+/* Premium purchase / unlock. */
+router.post('/:id/purchase', protect, assetController.purchaseAsset);
+
 /* Login required for every download, including free wallpapers.
    Keep these before /:id so Express does not treat download as an id. */
 router.post('/:id/download', protect, assetController.downloadAsset);
