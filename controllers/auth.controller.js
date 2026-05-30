@@ -12,7 +12,8 @@ const { sendEmail } = require('../config/resend');
 /* ── REGISTER ── */
 exports.register = async (req, res, next) => {
   try {
-    const { firstName, lastName, email, password, favouriteTeam } = req.body;
+    const { firstName, lastName, password, favouriteTeam } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
 
     /* Check duplicate */
     const exists = await User.findOne({ email });
@@ -55,7 +56,8 @@ exports.register = async (req, res, next) => {
 /* ── LOGIN ── */
 exports.login = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const { password } = req.body;
     if (!email || !password) return errorResponse(res, 400, 'Email and password required');
 
     const user = await User.findOne({ email }).select('+password +refreshToken');
@@ -127,7 +129,8 @@ exports.getMe = async (req, res, next) => {
 /* ── FORGOT PASSWORD ── */
 exports.forgotPassword = async (req, res, next) => {
   try {
-    const user = await User.findOne({ email: req.body.email });
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const user = await User.findOne({ email });
     if (!user) return errorResponse(res, 404, 'No account with that email');
 
     const resetToken   = crypto.randomBytes(32).toString('hex');
@@ -136,13 +139,26 @@ exports.forgotPassword = async (req, res, next) => {
     await user.save({ validateBeforeSave:false });
 
     const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
-    await sendEmail(
-      user.email,
-      '🔒 Paddox — Password Reset Request',
-      `<p>Click the link below to reset your password. This link expires in 10 minutes.</p><a href="${resetUrl}">${resetUrl}</a>`
-    );
+    let emailSent = false;
+    let emailError = '';
+    try {
+      await sendEmail(
+        user.email,
+        '🔒 Paddox — Password Reset Request',
+        `<p>Click the link below to reset your password. This link expires in 10 minutes.</p><a href="${resetUrl}">${resetUrl}</a>`
+      );
+      emailSent = true;
+      console.log('PADDOX password reset email sent:', user.email);
+    } catch (mailErr) {
+      emailError = mailErr.message || 'Email send failed';
+      console.error('PADDOX password reset email failed:', emailError);
+    }
 
-    successResponse(res, 200, 'Password reset email sent');
+    successResponse(res, 200, emailSent ? 'Password reset email sent' : 'Reset link generated but email failed', {
+      emailSent,
+      emailTo: user.email,
+      emailError
+    });
   } catch (err) { next(err); }
 };
 

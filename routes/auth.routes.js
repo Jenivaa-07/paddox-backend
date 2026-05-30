@@ -65,12 +65,12 @@ const resetPasswordHandler = ensureHandler('resetPassword', (req, res) => res.st
 router.post('/register', authLimiter, [
   body('firstName').optional().trim(),
   body('name').optional().trim(),
-  body('email').isEmail().withMessage('Valid email required').normalizeEmail(),
+  body('email').isEmail().withMessage('Valid email required').trim(),
   body('password').isLength({ min: 6 }).withMessage('Password min 6 characters'),
 ], validate, registerHandler);
 
 router.post('/login', authLimiter, [
-  body('email').isEmail().normalizeEmail(),
+  body('email').isEmail().withMessage('Valid email required').trim(),
   body('password').notEmpty(),
 ], validate, loginHandler);
 
