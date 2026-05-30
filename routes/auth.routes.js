@@ -48,10 +48,12 @@ const getMeHandler =
 
 const forgotPasswordHandler = ensureHandler('forgotPassword', (req, res) => res.status(501).json({ success: false, message: 'Forgot password is not configured yet' }));
 const resetPasswordHandler = ensureHandler('resetPassword', (req, res) => res.status(501).json({ success: false, message: 'Reset password is not configured yet' }));
+const verifyLoginTwoFactorHandler = ensureHandler('verifyLoginTwoFactor', (req, res) => res.status(501).json({ success: false, message: 'Login 2FA is not configured yet' }));
 
 /* Google Identity Services */
 router.get('/google/config', googleConfigHandler);
 router.post('/google', authLimiter, googleLoginHandler);
+router.post('/2fa/verify', authLimiter, verifyLoginTwoFactorHandler);
 
 router.post('/register', authLimiter, [
   body('firstName').optional().trim(),
