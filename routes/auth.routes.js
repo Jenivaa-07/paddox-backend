@@ -55,6 +55,9 @@ const verifyLoginTwoFactorHandler = ensureHandler('verifyLoginTwoFactor', (req, 
 router.get('/google/config', googleConfigHandler);
 router.post('/google', authLimiter, googleLoginHandler);
 router.post('/2fa/send', authLimiter, sendLoginTwoFactorHandler);
+router.put('/2fa/send', authLimiter, sendLoginTwoFactorHandler);
+router.patch('/2fa/send', authLimiter, sendLoginTwoFactorHandler);
+router.get('/2fa/send', authLimiter, sendLoginTwoFactorHandler); // compatibility for cached frontend builds
 router.post('/2fa/verify', authLimiter, verifyLoginTwoFactorHandler);
 
 router.post('/register', authLimiter, [

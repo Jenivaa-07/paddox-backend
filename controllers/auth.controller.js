@@ -407,13 +407,12 @@ exports.googleLogin = async (req, res, next) => {
 
 
 /* ── SEND / RESEND LOGIN 2FA CODE ──
-   Used before full login is completed. Frontend calls:
-   POST /api/auth/2fa/send
-   body: { twoFactorToken }
+   Used before full login is completed.
+   Supports POST body and GET query fallback for older frontend cache.
 */
 exports.sendLoginTwoFactorCode = async (req, res, next) => {
   try {
-    const twoFactorToken = String(req.body.twoFactorToken || '').trim();
+    const twoFactorToken = String(req.body?.twoFactorToken || req.query?.twoFactorToken || req.query?.token || '').trim();
 
     if (!twoFactorToken) {
       return errorResponse(res, 400, 'Two-factor login token is required');
@@ -440,12 +439,13 @@ exports.sendLoginTwoFactorCode = async (req, res, next) => {
 
     const freshTwoFactorToken = await sendLogin2FACode(user);
 
-    console.log('PADDOX Brevo login 2FA code resent:', user.email);
+    console.log('PADDOX Brevo login 2FA code sent/resend route:', user.email);
 
     return successResponse(res, 200, 'Verification code sent', {
       requires2FA: true,
       twoFactorToken: freshTwoFactorToken,
-      email: user.email
+      email: user.email,
+      emailTo: user.email
     });
   } catch (err) {
     console.error('PADDOX login 2FA send route failed:', err.message);
