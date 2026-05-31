@@ -556,6 +556,42 @@ exports.revokeSession = async (req, res) => {
   }
 };
 
+
+/* ── ADMIN: DELETE USER PERMANENTLY ── */
+exports.deleteUser = exports.deleteUserById = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const target = await User.findById(userId).select('firstName lastName email role fanPoints');
+
+    if (!target) {
+      return errorResponse(res, 404, 'User not found');
+    }
+
+    const deletedUser = {
+      _id: target._id,
+      firstName: target.firstName,
+      lastName: target.lastName,
+      email: target.email,
+      role: target.role,
+      fanPoints: target.fanPoints || 0
+    };
+
+    try {
+      await FanPoints.deleteMany({ user: target._id });
+    } catch (historyErr) {
+      console.warn('Fan point history cleanup skipped:', historyErr.message);
+    }
+
+    await User.findByIdAndDelete(target._id);
+
+    return successResponse(res, 200, 'User deleted permanently', {
+      user: deletedUser
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin user delete failed');
+  }
+};
+
 /* ── ADMIN: FAN POINTS SUMMARY ── */
 exports.adminGetFanPointSummary = async (req, res) => {
   try {
