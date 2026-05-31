@@ -80,6 +80,10 @@ async function attachSession(user, req, res) {
 }
 
 async function sendLogin2FACode(user) {
+  if (!user || !user.email) {
+    throw new Error('2FA email recipient missing. User query did not include email.');
+  }
+
   const code = make2FACode();
   if (!user.security) user.security = {};
   if (!user.security.twoFactor) user.security.twoFactor = {};
@@ -192,7 +196,7 @@ exports.login = async (req, res, next) => {
     const { password } = req.body;
     if (!email || !password) return errorResponse(res, 400, 'Email and password required');
 
-    const user = await User.findOne({ email }).select('+password +refreshToken security');
+    const user = await User.findOne({ email }).select('+password +refreshToken');
     if (!user)                      return errorResponse(res, 401, 'Invalid credentials');
     if (user.isBanned)              return errorResponse(res, 403, 'Account suspended');
     const match = await user.matchPassword(password);
@@ -447,7 +451,7 @@ exports.sendLoginTwoFactorCode = async (req, res, next) => {
       return errorResponse(res, 401, 'Invalid two-factor session');
     }
 
-    const user = await User.findById(decoded.id).select('+refreshToken security');
+    const user = await User.findById(decoded.id).select('+refreshToken');
 
     if (!user) return errorResponse(res, 404, 'User not found');
     if (user.isBanned) return errorResponse(res, 403, 'Account suspended');
@@ -491,7 +495,7 @@ exports.verifyLoginTwoFactor = async (req, res, next) => {
       return errorResponse(res, 401, 'Invalid two-factor session');
     }
 
-    const user = await User.findById(decoded.id).select('+refreshToken security');
+    const user = await User.findById(decoded.id).select('+refreshToken');
     if (!user) return errorResponse(res, 404, 'User not found');
     if (user.isBanned) return errorResponse(res, 403, 'Account suspended');
 
