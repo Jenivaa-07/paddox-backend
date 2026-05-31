@@ -1,7 +1,6 @@
 /* ============================================================
    FILE: controllers/asset.controller.js — Digital Assets
-   Phase A4.7A.2: Login-gated downloads, desktop/mobile wallpapers,
-   premium pricing foundation
+   Phase A4.7C.9: Premium wallpaper receipt email sync via Brevo
    ============================================================ */
 const DigitalAsset = require('../models/DigitalAsset');
 const Order        = require('../models/Order');
@@ -9,7 +8,7 @@ const FanPoints    = require('../models/FanPoints');
 const User         = require('../models/User');
 const { cloudinary } = require('../config/cloudinary');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
-const { sendEmail } = require('../config/resend');
+const { sendEmail } = require('../config/brevo');
 
 function serverError(res, err, label = 'Server error') {
   console.error(label, err);
@@ -199,17 +198,40 @@ async function sendDigitalReceiptEmail({ req, asset, order, format, downloadUrl 
     const html = digitalReceiptEmail({ user, asset, order, format, downloadUrl });
     const result = await sendEmail(to, subject, html);
 
+    if (!result || result.success === false) {
+      console.error('PADDOX digital receipt email rejected', {
+        to,
+        orderId: String(order?._id || ''),
+        orderNumber: order?.orderNumber || '',
+        provider: result?.provider || 'brevo',
+        status: result?.status || '',
+        message: result?.message || 'Unknown Brevo delivery error',
+        data: result?.data || null
+      });
+
+      return {
+        sent: false,
+        to,
+        provider: result?.provider || 'brevo',
+        error: result?.message || 'Brevo could not send the digital receipt email'
+      };
+    }
+
     console.log('PADDOX digital receipt email sent', {
       to,
       orderId: String(order._id),
       orderNumber: order.orderNumber || '',
-      providerId: result?.id || result?.data?.id || ''
+      provider: result?.provider || 'brevo',
+      providerId: result?.messageId || result?.id || result?.data?.id || '',
+      previewOnly: !!result?.previewOnly
     });
 
     return {
       sent: true,
       to,
-      providerId: result?.id || result?.data?.id || ''
+      provider: result?.provider || 'brevo',
+      providerId: result?.messageId || result?.id || result?.data?.id || '',
+      previewOnly: !!result?.previewOnly
     };
   } catch (err) {
     console.error('PADDOX digital receipt email failed', {
@@ -238,6 +260,7 @@ exports.purchaseAsset = async (req, res) => {
     }
 
     let order = await findPaidDigitalOrder(req.user._id, asset._id);
+    const alreadyUnlocked = !!order;
 
     if (!order) {
       const amount = Math.max(0, Number(asset.price || 0));
@@ -301,7 +324,7 @@ exports.purchaseAsset = async (req, res) => {
       downloadUrl,
       url: downloadUrl,
       receiptUrl: `receipt.html?orderId=${order._id}`,
-      alreadyUnlocked: !!order,
+      alreadyUnlocked,
       email,
       emailSent: email.sent,
       emailTo: email.to,
