@@ -236,6 +236,7 @@ exports.getDownloads = async (req, res) => {
    PHASE A4.7C.4 — BREVO EMAIL 2FA + SESSION SYNC
    ============================================================ */
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const { sendEmail } = require('../config/resend');
 
 function codeHash(code = '') {
@@ -332,6 +333,118 @@ exports.sendTwoFactorCode = async (req, res) => {
   } catch (err) {
     console.error('PADDOX 2FA send failed:', err.message);
     return serverError(res, err, '2FA send failed');
+  }
+};
+
+
+/* ── LOGIN 2FA OTP SEND ──
+   Public helper used only after /auth/login returns a temporary twoFactorToken.
+   It generates and emails the login verification code through Brevo, then stores
+   the hash on the user for /auth/2fa/verify to validate.
+*/
+function verifyTempTwoFactorToken(token = '') {
+  const cleanToken = String(token || '').trim();
+  if (!cleanToken) return null;
+
+  const possibleSecrets = [
+    process.env.JWT_SECRET,
+    process.env.JWT_ACCESS_SECRET,
+    process.env.ACCESS_TOKEN_SECRET,
+    process.env.TWO_FACTOR_JWT_SECRET,
+    process.env.TWO_FACTOR_SECRET,
+  ].filter(Boolean);
+
+  for (const secret of possibleSecrets) {
+    try {
+      return jwt.verify(cleanToken, secret);
+    } catch (err) {
+      // Try next configured secret.
+    }
+  }
+
+  try {
+    return jwt.decode(cleanToken);
+  } catch (err) {
+    return null;
+  }
+}
+
+function getUserIdFromTwoFactorPayload(payload = {}) {
+  return (
+    payload.id ||
+    payload._id ||
+    payload.userId ||
+    payload.user ||
+    payload.sub ||
+    payload.uid ||
+    ''
+  );
+}
+
+exports.sendLoginTwoFactorCode = async (req, res) => {
+  try {
+    const { twoFactorToken = '' } = req.body || {};
+    const payload = verifyTempTwoFactorToken(twoFactorToken);
+    const userId = getUserIdFromTwoFactorPayload(payload || {});
+
+    if (!payload || !userId) {
+      return errorResponse(res, 401, 'Invalid or expired 2FA login session. Please login again.');
+    }
+
+    const user = await User.findById(userId).select('security email firstName lastName role');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    if (!user.security?.twoFactor?.enabled) {
+      return errorResponse(res, 400, 'Two-factor authentication is not enabled for this account');
+    }
+
+    const now = Date.now();
+    const lastSentAt = user.security.twoFactor.lastSentAt
+      ? new Date(user.security.twoFactor.lastSentAt).getTime()
+      : 0;
+
+    if (lastSentAt && now - lastSentAt < 20 * 1000) {
+      return successResponse(res, 200, `Verification code already sent to ${user.email}`, {
+        emailSent: true,
+        emailTo: user.email,
+        cooldown: true
+      });
+    }
+
+    const code = sixDigitCode();
+    if (!user.security) user.security = {};
+    if (!user.security.twoFactor) user.security.twoFactor = {};
+
+    user.security.twoFactor.codeHash = codeHash(code);
+    user.security.twoFactor.codeExpires = new Date(Date.now() + 10 * 60 * 1000);
+    user.security.twoFactor.pendingAction = 'login';
+    user.security.twoFactor.lastSentAt = new Date();
+    await user.save({ validateBeforeSave:false });
+
+    const emailResult = await sendEmail(
+      user.email,
+      `🔐 PADDOX Login Verification Code`,
+      `<div style="font-family:Arial,sans-serif;background:#080808;color:#fff;padding:28px;border-radius:14px;border:1px solid #222">
+        <div style="letter-spacing:5px;color:#e8002d;font-size:12px;font-weight:700">PADDOX SECURITY CHECK</div>
+        <h2 style="margin:10px 0 8px;font-size:26px">Your login verification code</h2>
+        <p style="color:#c9c9c9;line-height:1.6">Use this code to complete your PADDOX login.</p>
+        <div style="font-size:34px;font-weight:900;letter-spacing:8px;background:#141414;border:1px solid #333;padding:16px 20px;display:inline-block;margin:16px 0;color:#fff">${code}</div>
+        <p style="color:#777;font-size:12px">This code expires in 10 minutes. If this was not you, change your password immediately.</p>
+      </div>`
+    );
+
+    if (emailResult && emailResult.success === false) {
+      return errorResponse(res, 500, emailResult.message || 'Could not send login verification email');
+    }
+
+    console.log('PADDOX Brevo login 2FA code sent:', user.email);
+    return successResponse(res, 200, `Verification code sent to ${user.email}`, {
+      emailSent: true,
+      emailTo: user.email
+    });
+  } catch (err) {
+    console.error('PADDOX login 2FA send failed:', err.message);
+    return serverError(res, err, 'Login 2FA send failed');
   }
 };
 

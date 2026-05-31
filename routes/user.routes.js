@@ -145,6 +145,19 @@ router.put(
   pickHandler(['updatePassword', 'changePassword'], 'Password update')
 );
 
+
+/* Login-time 2FA code send. This is intentionally unprotected because it uses
+   the temporary twoFactorToken returned by /auth/login before full login. */
+router.post(
+  '/security/2fa/login/send',
+  pickHandler(['sendLoginTwoFactorCode', 'sendTwoFactorLoginCode', 'sendLogin2FACode'], 'Login 2FA send')
+);
+
+router.post(
+  '/security/2fa/login/resend',
+  pickHandler(['sendLoginTwoFactorCode', 'sendTwoFactorLoginCode', 'sendLogin2FACode'], 'Login 2FA resend')
+);
+
 router.post(
   '/security/2fa/send',
   protect,
