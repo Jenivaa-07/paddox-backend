@@ -9,6 +9,7 @@ const Cart    = require('../models/Cart');
 const Product = require('../models/Product');
 const FanPoints = require('../models/FanPoints');
 const User    = require('../models/User');
+const Coupon  = require('../models/Coupon');
 const { successResponse, errorResponse, paginatedResponse } = require('../utils/apiResponse');
 const { sendEmail } = require('../config/brevo');
 const { getIO }     = require('../config/socket');
@@ -21,6 +22,193 @@ function serverError(res, err, label = 'Server error') {
   });
 }
 
+function rupee(value = 0) {
+  return `₹${Number(value || 0).toLocaleString('en-IN')}`;
+}
+
+function escapeHtml(value = '') {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function paymentLabel(method = '') {
+  const labels = {
+    upi: 'UPI',
+    card: 'Credit / Debit Card',
+    netbanking: 'Net Banking',
+    wallet: 'Wallet',
+    cod: 'Cash on Delivery',
+    razorpay: 'Online Payment'
+  };
+  return labels[String(method || '').toLowerCase()] || String(method || 'UPI').toUpperCase();
+}
+
+function buildMerchReceiptEmail(order, customer = {}) {
+  const address = order.shippingAddress || {};
+  const pricing = order.pricing || {};
+  const coupon = order.coupon || {};
+  const payment = order.payment || {};
+  const items = Array.isArray(order.items) ? order.items : [];
+
+  const receiptUrl = `${(process.env.CLIENT_URL || 'https://paddox.vercel.app').replace(/\/$/, '')}/receipt.html?orderId=${encodeURIComponent(String(order._id))}`;
+
+  const itemRows = items.map(item => `
+    <tr>
+      <td style="padding:12px 0;border-bottom:1px solid #252525;">
+        <div style="font-weight:800;color:#fff">${escapeHtml(item.name)}</div>
+        <div style="font-size:12px;color:#888">
+          Qty ${Number(item.quantity || 1)}
+          ${item.size ? ` · Size ${escapeHtml(item.size)}` : ''}
+          ${item.color ? ` · ${escapeHtml(item.color)}` : ''}
+        </div>
+      </td>
+      <td style="padding:12px 0;border-bottom:1px solid #252525;text-align:right;color:#fff;font-weight:800">
+        ${rupee(Number(item.price || 0) * Number(item.quantity || 1))}
+      </td>
+    </tr>
+  `).join('');
+
+  return `
+    <div style="margin:0;padding:0;background:#050505;font-family:Arial,Helvetica,sans-serif;color:#ffffff">
+      <div style="max-width:720px;margin:0 auto;padding:28px 18px">
+        <div style="border:1px solid #262626;background:linear-gradient(145deg,#111,#070707);border-top:5px solid #e8002d;padding:28px">
+          <div style="letter-spacing:6px;font-size:13px;font-weight:900;color:#e8002d;text-transform:uppercase">PADDOX</div>
+          <h1 style="font-size:32px;line-height:1.1;margin:12px 0 8px;color:#fff;text-transform:uppercase">Order Receipt</h1>
+          <p style="margin:0 0 22px;color:#b7b7b7;line-height:1.6">
+            Hey ${escapeHtml(customer.firstName || address.name || 'Fan')}, your PADDOX merchandise order has been placed successfully.
+          </p>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px">
+            <div style="background:#151515;border:1px solid #252525;padding:14px">
+              <div style="font-size:11px;letter-spacing:2px;color:#888;text-transform:uppercase">Order ID</div>
+              <div style="font-size:20px;font-weight:900;color:#fff;margin-top:4px">${escapeHtml(order.orderNumber || String(order._id))}</div>
+            </div>
+            <div style="background:#151515;border:1px solid #252525;padding:14px">
+              <div style="font-size:11px;letter-spacing:2px;color:#888;text-transform:uppercase">Payment</div>
+              <div style="font-size:20px;font-weight:900;color:#fff;margin-top:4px">${escapeHtml(paymentLabel(payment.method))}</div>
+            </div>
+          </div>
+
+          <div style="background:#101010;border:1px solid #252525;padding:16px;margin-bottom:22px">
+            <div style="font-size:12px;letter-spacing:3px;color:#e8002d;text-transform:uppercase;font-weight:900;margin-bottom:8px">Delivery Details</div>
+            <div style="color:#fff;font-weight:800">${escapeHtml(address.name)}</div>
+            <div style="color:#b7b7b7;line-height:1.6;font-size:14px">
+              ${escapeHtml(address.line1)}${address.line2 ? `, ${escapeHtml(address.line2)}` : ''}<br/>
+              ${escapeHtml(address.city)}, ${escapeHtml(address.state)} - ${escapeHtml(address.pincode)}<br/>
+              ${escapeHtml(address.country || 'India')} · ${escapeHtml(address.phone)}
+            </div>
+          </div>
+
+          <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-bottom:18px">
+            <thead>
+              <tr>
+                <th align="left" style="padding:0 0 10px;color:#e8002d;font-size:12px;letter-spacing:2px;text-transform:uppercase">Items</th>
+                <th align="right" style="padding:0 0 10px;color:#e8002d;font-size:12px;letter-spacing:2px;text-transform:uppercase">Amount</th>
+              </tr>
+            </thead>
+            <tbody>${itemRows}</tbody>
+          </table>
+
+          <div style="background:#101010;border:1px solid #252525;padding:16px;margin-bottom:22px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Subtotal</span><strong>${rupee(pricing.subtotal)}</strong></div>
+            ${Number(pricing.productDiscount || 0) ? `<div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Product discount</span><strong>- ${rupee(pricing.productDiscount)}</strong></div>` : ''}
+            ${Number(pricing.discount || 0) ? `<div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Coupon ${escapeHtml(coupon.code || '')}</span><strong>- ${rupee(pricing.discount)}</strong></div>` : ''}
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Shipping</span><strong>${Number(pricing.shipping || 0) ? rupee(pricing.shipping) : 'FREE'}</strong></div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:12px;color:#bbb"><span>Tax</span><strong>${rupee(pricing.tax)}</strong></div>
+            <div style="display:flex;justify-content:space-between;border-top:1px solid #303030;padding-top:14px;color:#fff;font-size:20px"><span style="font-weight:900">Total Paid</span><strong style="color:#e8002d">${rupee(pricing.total)}</strong></div>
+          </div>
+
+          <a href="${receiptUrl}" style="display:inline-block;background:#e8002d;color:#fff;text-decoration:none;padding:14px 22px;font-weight:900;letter-spacing:2px;text-transform:uppercase">
+            View Receipt
+          </a>
+
+          <p style="color:#777;font-size:12px;line-height:1.6;margin-top:22px">
+            This is your PADDOX order receipt copy. Keep it for your records.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function sendMerchandiseReceiptEmail(order, req) {
+  const customer =
+    await User.findById(req.user._id)
+      .select('firstName lastName email')
+      .lean()
+      .catch(() => null);
+
+  const recipient = String(customer?.email || req.user?.email || '').trim();
+
+  if (!recipient) {
+    console.warn('PADDOX merchandise receipt email skipped: no recipient email', {
+      orderId: order?._id,
+      userId: req.user?._id
+    });
+    return { success: false, message: 'No recipient email' };
+  }
+
+  const result = await sendEmail(
+    recipient,
+    `🏁 PADDOX Receipt — #${order.orderNumber || order._id}`,
+    buildMerchReceiptEmail(order, customer || {}),
+    { replyTo: process.env.BREVO_REPLY_TO || process.env.BREVO_SENDER_EMAIL || process.env.FROM_EMAIL || undefined }
+  );
+
+  if (!result || result.success === false) {
+    console.warn('PADDOX merchandise receipt email failed:', {
+      orderId: order?._id,
+      to: recipient,
+      provider: result?.provider || 'brevo',
+      status: result?.status || '',
+      message: result?.message || 'Unknown email error',
+      data: result?.data || null
+    });
+    return result || { success: false, message: 'Unknown email error' };
+  }
+
+  console.log('PADDOX merchandise receipt email sent:', {
+    orderId: String(order._id),
+    orderNumber: order.orderNumber,
+    to: recipient,
+    provider: result.provider || 'brevo',
+    messageId: result.messageId || ''
+  });
+
+  return result;
+}
+
+async function resolveCheckoutCoupon(code = '', baseTotal = 0) {
+  const cleanCode = String(code || '').trim().toUpperCase();
+  if (!cleanCode) return { couponDoc: null, couponPayload: {}, discount: 0 };
+
+  const couponDoc = await Coupon.findOne({ code: cleanCode });
+  if (!couponDoc) throw new Error('Invalid coupon code');
+  if (!couponDoc.isActive) throw new Error('Coupon is inactive');
+  if (couponDoc.isExpired()) throw new Error('Coupon has expired');
+  if (couponDoc.isUsageLimitReached()) throw new Error('Coupon usage limit reached');
+  if (couponDoc.minOrderValue && Number(baseTotal || 0) < Number(couponDoc.minOrderValue || 0)) {
+    throw new Error(`Minimum order value is ₹${Number(couponDoc.minOrderValue || 0).toLocaleString('en-IN')}`);
+  }
+
+  const discount = Math.max(0, Math.min(Number(couponDoc.calculateDiscount(baseTotal) || 0), Number(baseTotal || 0)));
+
+  return {
+    couponDoc,
+    couponPayload: {
+      code: couponDoc.code,
+      type: couponDoc.type,
+      value: Number(couponDoc.value || 0),
+      discount
+    },
+    discount
+  };
+}
+
 /* ── PLACE ORDER ── */
 exports.placeOrder = async (req, res) => {
   try {
@@ -28,7 +216,8 @@ exports.placeOrder = async (req, res) => {
       items,
       shippingAddress = {},
       paymentMethod = 'upi',
-      notes = ''
+      notes = '',
+      couponCode = ''
     } = req.body;
 
     if (!items || !Array.isArray(items) || !items.length) {
@@ -61,18 +250,22 @@ exports.placeOrder = async (req, res) => {
         return errorResponse(res, 400, `Insufficient stock for: ${product.name}`);
       }
 
+      const originalPrice = Number(product.price || 0);
       const price =
         product.onSale && product.salePrice
-          ? product.salePrice
-          : product.price;
+          ? Number(product.salePrice)
+          : originalPrice;
 
       subtotal += price * quantity;
 
       orderItems.push({
         product: product._id,
+        itemType: 'product',
         name: product.name,
         image: product.images?.[0]?.url || '',
         price,
+        originalPrice: Math.max(originalPrice, price),
+        productDiscount: Math.max(0, Math.max(originalPrice, price) - price),
         quantity,
         size: item.size || '',
         color: item.color || '',
@@ -80,9 +273,12 @@ exports.placeOrder = async (req, res) => {
       });
     }
 
+    const { couponDoc, couponPayload, discount } = await resolveCheckoutCoupon(couponCode, subtotal);
+
     const shipping = subtotal >= 999 ? 0 : 99;
-    const tax = Math.round(subtotal * 0.05);
-    const total = subtotal + shipping + tax;
+    const taxableSubtotal = Math.max(0, subtotal - discount);
+    const tax = Math.round(taxableSubtotal * 0.05);
+    const total = taxableSubtotal + shipping + tax;
 
     const safeShippingAddress = {
       name: String(shippingAddress.name || '').trim(),
@@ -124,12 +320,17 @@ exports.placeOrder = async (req, res) => {
       user: req.user._id,
       items: orderItems,
       shippingAddress: safeShippingAddress,
+      orderType: 'merchandise',
       pricing: {
         subtotal,
         shipping,
+        productDiscount: orderItems.reduce((sum, item) => sum + Number(item.productDiscount || 0) * Number(item.quantity || 1), 0),
+        discount,
+        totalDiscount: discount,
         tax,
         total
       },
+      coupon: couponPayload,
       payment: {
         method: normalisedPaymentMethod,
         status: normalisedPaymentMethod === 'cod' ? 'pending' : 'paid',
@@ -147,6 +348,14 @@ exports.placeOrder = async (req, res) => {
         item.product,
         { $inc: { stock: -item.quantity } }
       );
+    }
+
+    if (couponDoc) {
+      try {
+        await Coupon.findByIdAndUpdate(couponDoc._id, { $inc: { usedCount: 1 } });
+      } catch (err) {
+        console.warn('Coupon usage update failed:', err.message);
+      }
     }
 
     /* Non-critical cleanup/rewards/email/socket */
@@ -179,17 +388,9 @@ exports.placeOrder = async (req, res) => {
     }
 
     try {
-      if (req.user?.email) {
-        await sendEmail(
-          req.user.email,
-          `🏁 Paddox Order Confirmed — #${order.orderNumber}`,
-          `<h2>Order Confirmed!</h2>
-           <p>Your order <strong>#${order.orderNumber}</strong> has been placed.</p>
-           <p>Total: ₹${total.toLocaleString('en-IN')}</p>`
-        );
-      }
+      await sendMerchandiseReceiptEmail(order, req);
     } catch (err) {
-      console.warn('Order email failed:', err.message);
+      console.warn('Order receipt email failed:', err.message);
     }
 
     try {
