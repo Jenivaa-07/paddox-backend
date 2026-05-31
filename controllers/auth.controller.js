@@ -89,7 +89,7 @@ async function sendLogin2FACode(user) {
   user.security.twoFactor.lastSentAt = new Date();
   await user.save({ validateBeforeSave:false });
 
-  await sendEmail(
+  const emailResult = await sendEmail(
     user.email,
     '🔐 PADDOX Login Verification Code',
     `<div style="font-family:Arial,sans-serif;background:#080808;color:#fff;padding:28px;border-radius:14px;border:1px solid #222">
@@ -100,6 +100,24 @@ async function sendLogin2FACode(user) {
       <p style="color:#777;font-size:12px">This code expires in 10 minutes.</p>
     </div>`
   );
+
+  if (!emailResult || emailResult.success === false) {
+    console.error('PADDOX Brevo login 2FA delivery rejected:', {
+      to: user.email,
+      provider: emailResult?.provider || 'brevo',
+      status: emailResult?.status || '',
+      message: emailResult?.message || 'Unknown Brevo delivery error',
+      data: emailResult?.data || null
+    });
+    throw new Error(emailResult?.message || 'Brevo could not send the login verification email');
+  }
+
+  console.log('PADDOX Brevo login 2FA delivery accepted:', {
+    to: user.email,
+    provider: emailResult.provider || 'brevo',
+    messageId: emailResult.messageId || '',
+    previewOnly: !!emailResult.previewOnly
+  });
 
   return jwt.sign(
     { id:String(user._id), purpose:'paddox_2fa_login' },
@@ -449,7 +467,7 @@ exports.sendLoginTwoFactorCode = async (req, res, next) => {
     });
   } catch (err) {
     console.error('PADDOX login 2FA send route failed:', err.message);
-    return next(err);
+    return errorResponse(res, 500, err.message || 'Could not send 2FA email. Please try again.');
   }
 };
 
