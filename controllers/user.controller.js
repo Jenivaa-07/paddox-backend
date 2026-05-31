@@ -555,3 +555,105 @@ exports.revokeSession = async (req, res) => {
     return serverError(res, err, 'Session revoke failed');
   }
 };
+
+/* ── ADMIN: FAN POINTS SUMMARY ── */
+exports.adminGetFanPointSummary = async (req, res) => {
+  try {
+    const userId = req.params.id;
+
+    const target = await User.findById(userId).select('firstName lastName email fanPoints fanTier');
+    if (!target) return errorResponse(res, 404, 'User not found');
+
+    const grouped = await FanPoints.aggregate([
+      { $match: { user: target._id } },
+      { $group: { _id: '$action', totalPoints: { $sum: '$points' }, count: { $sum: 1 } } },
+      { $sort: { totalPoints: -1 } }
+    ]);
+
+    const labelMap = {
+      poll_vote: 'Poll Vote',
+      trivia_answer: 'Trivia Answer',
+      trivia_correct: 'Trivia Correct',
+      download: 'Download',
+      admin_adjust: 'Admin Reward',
+      admin_deduct: 'Admin Deduction',
+      admin_reset: 'Admin Reset'
+    };
+
+    const actions = grouped.map(item => ({
+      action: item._id || 'unknown',
+      label: labelMap[item._id] || String(item._id || 'Unknown').replace(/_/g, ' '),
+      points: item.totalPoints || 0,
+      totalPoints: item.totalPoints || 0,
+      count: item.count || 0
+    }));
+
+    return successResponse(res, 200, 'Fan point summary fetched', {
+      user: publicUser(target),
+      actions
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin fan point summary failed');
+  }
+};
+
+/* ── ADMIN: ADD / DEDUCT / RESET FAN POINTS ── */
+exports.adminAdjustFanPoints = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const mode = String(req.body.mode || 'add').toLowerCase();
+    const rawAmount = Number(req.body.amount || 0);
+    const reason = String(req.body.reason || '').trim();
+
+    const target = await User.findById(userId);
+    if (!target) return errorResponse(res, 404, 'User not found');
+
+    const before = Number(target.fanPoints || 0);
+    let delta = 0;
+
+    if (mode === 'reset') {
+      delta = -before;
+      target.fanPoints = 0;
+    } else {
+      if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+        return errorResponse(res, 400, 'Valid points amount required');
+      }
+
+      delta = mode === 'deduct' ? -Math.abs(rawAmount) : Math.abs(rawAmount);
+      target.fanPoints = Math.max(0, before + delta);
+    }
+
+    if (typeof target.updateFanTier === 'function') {
+      target.updateFanTier();
+    }
+
+    await target.save({ validateBeforeSave:false });
+
+    try {
+      await FanPoints.create({
+        user: target._id,
+        action: mode === 'reset' ? 'admin_reset' : (delta < 0 ? 'admin_deduct' : 'admin_adjust'),
+        points: delta,
+        meta: {
+          mode,
+          reason,
+          before,
+          after: target.fanPoints,
+          adjustedBy: req.user?._id
+        }
+      });
+    } catch (logErr) {
+      console.warn('Fan point admin history log failed:', logErr.message);
+    }
+
+    return successResponse(res, 200, 'Fan points updated', {
+      user: publicUser(target),
+      before,
+      after: target.fanPoints,
+      delta
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin fan points update failed');
+  }
+};
+

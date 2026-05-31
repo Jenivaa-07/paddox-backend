@@ -205,6 +205,29 @@ router.get(
   pickHandler(['getAllUsers', 'getUsers', 'listUsers'], 'Admin users fetch')
 );
 
+
+/* Admin: Fan points controls */
+router.get(
+  '/:id/fan-points/summary',
+  protect,
+  adminOnly,
+  pickHandler(['adminGetFanPointSummary', 'getAdminFanPointSummary'], 'Admin fan point summary')
+);
+
+router.put(
+  '/:id/fan-points/adjust',
+  protect,
+  adminOnly,
+  pickHandler(['adminAdjustFanPoints', 'adjustAdminFanPoints'], 'Admin fan point update')
+);
+
+router.patch(
+  '/:id/fan-points/adjust',
+  protect,
+  adminOnly,
+  pickHandler(['adminAdjustFanPoints', 'adjustAdminFanPoints'], 'Admin fan point update')
+);
+
 router.get(
   '/:id',
   protect,
