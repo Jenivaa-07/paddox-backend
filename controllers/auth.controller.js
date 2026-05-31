@@ -406,6 +406,54 @@ exports.googleLogin = async (req, res, next) => {
 };
 
 
+/* ── SEND / RESEND LOGIN 2FA CODE ──
+   Used before full login is completed. Frontend calls:
+   POST /api/auth/2fa/send
+   body: { twoFactorToken }
+*/
+exports.sendLoginTwoFactorCode = async (req, res, next) => {
+  try {
+    const twoFactorToken = String(req.body.twoFactorToken || '').trim();
+
+    if (!twoFactorToken) {
+      return errorResponse(res, 400, 'Two-factor login token is required');
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(twoFactorToken, process.env.JWT_ACCESS_SECRET);
+    } catch (_) {
+      return errorResponse(res, 401, 'Two-factor session expired. Login again.');
+    }
+
+    if (decoded.purpose !== 'paddox_2fa_login') {
+      return errorResponse(res, 401, 'Invalid two-factor session');
+    }
+
+    const user = await User.findById(decoded.id).select('+refreshToken security');
+
+    if (!user) return errorResponse(res, 404, 'User not found');
+    if (user.isBanned) return errorResponse(res, 403, 'Account suspended');
+    if (!user.security?.twoFactor?.enabled) {
+      return errorResponse(res, 400, 'Two-factor authentication is not enabled for this account');
+    }
+
+    const freshTwoFactorToken = await sendLogin2FACode(user);
+
+    console.log('PADDOX Brevo login 2FA code resent:', user.email);
+
+    return successResponse(res, 200, 'Verification code sent', {
+      requires2FA: true,
+      twoFactorToken: freshTwoFactorToken,
+      email: user.email
+    });
+  } catch (err) {
+    console.error('PADDOX login 2FA send route failed:', err.message);
+    return next(err);
+  }
+};
+
+
 /* ── VERIFY LOGIN 2FA ── */
 exports.verifyLoginTwoFactor = async (req, res, next) => {
   try {
