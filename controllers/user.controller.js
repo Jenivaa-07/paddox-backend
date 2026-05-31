@@ -571,10 +571,13 @@ exports.adminGetFanPointSummary = async (req, res) => {
     ]);
 
     const labelMap = {
+      purchase: 'Signup Bonus',
       poll_vote: 'Poll Vote',
+      trivia: 'Trivia Correct',
       trivia_answer: 'Trivia Answer',
       trivia_correct: 'Trivia Correct',
-      download: 'Download',
+      download: 'Wallpaper Download',
+      fan_post: 'Fan Post / Comment',
       admin_adjust: 'Admin Reward',
       admin_deduct: 'Admin Deduction',
       admin_reset: 'Admin Reset'
