@@ -1,14 +1,13 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
    PADDOX — AI Fan Studio Generation Foundation
-   Phase A4.11C.6
+   Phase A4.11D
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
 const { cloudinary } = require('../config/cloudinary');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
-const https = require('https');
-const http = require('http');
+const axios = require('axios');
 
 const STANDARD_AI_POSTER_COST = 15;
 
@@ -86,6 +85,92 @@ function buildSafePrompt(body = {}) {
     `Use luxury black graphite, white contrast, red racing accents, speed lines, glass depth, clean branding, cinematic lighting.`,
     `This is fictional fan artwork only.`
   ].filter(Boolean).join(' ');
+}
+
+
+function envBool(value = '') {
+  return ['1', 'true', 'yes', 'live', 'on'].includes(String(value || '').toLowerCase().trim());
+}
+
+function getAiStudioMode() {
+  const provider = String(process.env.AI_IMAGE_PROVIDER || 'paddox-preview').toLowerCase().trim();
+  const mode = String(process.env.AI_STUDIO_MODE || 'preview').toLowerCase().trim();
+  const hasKey = !!String(process.env.GEMINI_API_KEY || '').trim();
+  const liveRequested = provider === 'gemini' && mode === 'live' && hasKey;
+  return {
+    provider: liveRequested ? 'gemini' : 'paddox-preview',
+    providerMode: liveRequested ? 'live' : 'preview',
+    liveRequested,
+    model: process.env.GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation'
+  };
+}
+
+function splitDataUri(dataUri = '') {
+  const match = String(dataUri || '').match(/^data:(image\/(?:png|jpe?g|webp|svg\+xml));base64,(.+)$/i);
+  if (!match) return null;
+  return { mimeType: match[1], data: match[2].replace(/[\r\n]/g, '') };
+}
+
+function buildGeminiPrompt(promptUsed = '', body = {}) {
+  return [
+    promptUsed,
+    '',
+    'IMPORTANT SAFETY AND BRAND RULES:',
+    '- Create a fictional motorsport fan artwork/poster only.',
+    '- Do not show or imply a real meeting with a real driver.',
+    '- Do not create official Formula 1, FIA, team, sponsor, or driver endorsement marks.',
+    '- Avoid exact real driver likeness; use driver/team-inspired mood only.',
+    '- Premium PADDOX visual style: graphite black, red accent, clean race lighting, luxury paddock atmosphere.',
+    '- The final image should be a poster-style visual suitable for sharing.',
+    body.photoDataUrl ? '- Use the uploaded fan photo as loose personal reference, but keep the result fictional and poster-like.' : ''
+  ].filter(Boolean).join('\n');
+}
+
+async function generateWithGemini({ promptUsed, body, outputFormat }) {
+  const { model } = getAiStudioMode();
+  const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) throw new Error('GEMINI_API_KEY is missing');
+
+  const photo = safePhotoDataUri(body.photoDataUrl || '');
+  const parts = [{ text: buildGeminiPrompt(promptUsed, { ...body, photoDataUrl: photo }) }];
+  const imagePart = splitDataUri(photo);
+  if (imagePart && imagePart.data.length < 1600000) {
+    parts.push({ inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } });
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await axios.post(url, {
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      responseModalities: ['TEXT', 'IMAGE']
+    }
+  }, {
+    timeout: Number(process.env.GEMINI_TIMEOUT_MS || 45000),
+    headers: { 'Content-Type': 'application/json' },
+    validateStatus: () => true
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    const msg = response.data?.error?.message || `Gemini request failed with ${response.status}`;
+    throw new Error(msg);
+  }
+
+  const candidates = response.data?.candidates || [];
+  for (const candidate of candidates) {
+    const candidateParts = candidate?.content?.parts || [];
+    for (const part of candidateParts) {
+      const inline = part.inlineData || part.inline_data;
+      if (inline?.data && inline?.mimeType) {
+        return {
+          dataUri: `data:${inline.mimeType};base64,${String(inline.data).replace(/[\r\n]/g, '')}`,
+          model,
+          text: candidateParts.map(p => p.text).filter(Boolean).join('\n').slice(0, 500)
+        };
+      }
+    }
+  }
+
+  throw new Error('Gemini did not return an image');
 }
 
 function safePhotoDataUri(value = '') {
@@ -296,15 +381,31 @@ exports.generatePoster = async (req, res) => {
     const creativePrompt = cleanText(body.creativePrompt || '', 420);
     const promptUsed = buildSafePrompt({ style, tone, fanName, driverInspiration, teamMood, outputFormat, creativePrompt });
 
-    /* Gemini-ready switch: real provider can be connected in A4.11C.2 by using
-       GEMINI_API_KEY + AI_STUDIO_MODE=live. This foundation keeps the app safe
-       today by producing a branded PADDOX preview poster and saving it. */
-    const provider = process.env.AI_IMAGE_PROVIDER || 'paddox-preview';
-    const providerMode = process.env.AI_STUDIO_MODE === 'live' && process.env.GEMINI_API_KEY
-      ? 'gemini-ready-fallback'
-      : 'preview';
+    const studioMode = getAiStudioMode();
+    let provider = studioMode.provider;
+    let providerMode = studioMode.providerMode;
+    let dataUri = '';
+    let geminiText = '';
+    let geminiError = '';
 
-    const dataUri = await buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
+    if (studioMode.liveRequested) {
+      try {
+        const geminiResult = await generateWithGemini({ promptUsed, body, outputFormat });
+        dataUri = geminiResult.dataUri;
+        provider = 'gemini';
+        providerMode = 'live';
+        geminiText = geminiResult.text || '';
+      } catch (err) {
+        geminiError = err.message || 'Gemini generation failed';
+        console.warn('PADDOX Gemini live generation failed; using fallback poster:', geminiError);
+        dataUri = await buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
+        provider = 'paddox-preview';
+        providerMode = 'live-fallback';
+      }
+    } else {
+      dataUri = await buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
+    }
+
     const uploaded = await uploadDataUriToCloudinary(dataUri, user._id.toString());
 
     user.aiCredits = Math.max(0, before - STANDARD_AI_POSTER_COST);
@@ -329,17 +430,25 @@ exports.generatePoster = async (req, res) => {
       status: 'generated',
       meta: {
         hasUserPhoto: !!body.photoDataUrl,
-        realProviderEnabled: providerMode !== 'preview',
-        note: 'A4.11C.6 fast fallback: no remote logo fetch; Cloudinary save has timeout to prevent hanging.'
+        realProviderEnabled: studioMode.liveRequested,
+        geminiModel: studioMode.model,
+        geminiText,
+        geminiError,
+        note: providerMode === 'live'
+          ? 'A4.11D: Real Gemini image generation succeeded.'
+          : providerMode === 'live-fallback'
+            ? 'A4.11D: Gemini failed, safe PADDOX fallback generated instead.'
+            : 'A4.11D: Preview mode fallback poster generated. Set GEMINI_API_KEY + AI_IMAGE_PROVIDER=gemini + AI_STUDIO_MODE=live for real Gemini mode.'
       }
     });
 
-    return successResponse(res, 201, 'AI poster generated. 15 credits used.', {
+    return successResponse(res, 201, providerMode === 'live' ? 'Gemini AI poster generated. 15 credits used.' : providerMode === 'live-fallback' ? 'Gemini was unavailable, PADDOX fallback poster generated. 15 credits used.' : 'AI poster generated. 15 credits used.', {
       poster,
       aiCredits: user.aiCredits,
       cost: STANDARD_AI_POSTER_COST,
       provider,
-      providerMode
+      providerMode,
+      geminiError
     });
   } catch (err) {
     return serverError(res, err, 'AI poster generation failed');
