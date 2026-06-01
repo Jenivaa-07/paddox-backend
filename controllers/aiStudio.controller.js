@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
    PADDOX — AI Fan Studio Generation Foundation
-   Phase A4.11C.5
+   Phase A4.11C.6
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -41,67 +41,21 @@ function escapeSvg(value = '') {
 
 
 
-function fetchRemoteAsDataUri(url, maxBytes = 800000) {
-  return new Promise((resolve) => {
-    const cleanUrl = String(url || '').trim();
-    if (!/^https?:\/\//i.test(cleanUrl)) return resolve('');
 
-    const client = cleanUrl.startsWith('https://') ? https : http;
-    const req = client.get(cleanUrl, { timeout: 6000 }, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        return resolve(fetchRemoteAsDataUri(res.headers.location, maxBytes));
-      }
-
-      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        return resolve('');
-      }
-
-      const contentType = String(res.headers['content-type'] || 'image/png').split(';')[0].trim();
-      if (!/^image\/(png|jpeg|jpg|webp|svg\+xml)$/i.test(contentType)) {
-        res.resume();
-        return resolve('');
-      }
-
-      const chunks = [];
-      let total = 0;
-      res.on('data', (chunk) => {
-        total += chunk.length;
-        if (total <= maxBytes) chunks.push(chunk);
-        else req.destroy();
-      });
-      res.on('end', () => {
-        if (!chunks.length || total > maxBytes) return resolve('');
-        resolve(`data:${contentType};base64,${Buffer.concat(chunks).toString('base64')}`);
-      });
-    });
-
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(''));
-  });
+/* A4.11C.6 Emergency generation speed fix:
+   Do not fetch external logo URLs during generation. Render was hanging on remote
+   asset fetch / image upload in some deploys. The poster now responds fast and
+   uses PADDOX wordmark branding. A later phase can embed the real logo as a
+   local/base64 asset without network calls. */
+async function getPaddoxBrandIconDataUri() {
+  return '';
 }
 
-let cachedBrandIconDataUri = null;
-async function getPaddoxBrandIconDataUri() {
-  if (cachedBrandIconDataUri !== null) return cachedBrandIconDataUri;
-
-  const candidates = [
-    process.env.PADDOX_BRAND_ICON_URL,
-    process.env.FRONTEND_URL ? `${String(process.env.FRONTEND_URL).replace(/\/$/, '')}/assets/paddox-logo-icon-web.png` : '',
-    'https://paddox.vercel.app/assets/paddox-logo-icon-web.png'
-  ].filter(Boolean);
-
-  for (const url of candidates) {
-    const dataUri = await fetchRemoteAsDataUri(url);
-    if (dataUri) {
-      cachedBrandIconDataUri = dataUri;
-      return cachedBrandIconDataUri;
-    }
-  }
-
-  cachedBrandIconDataUri = '';
-  return cachedBrandIconDataUri;
+function withTimeout(promise, ms = 6500, fallback = null) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(fallback), ms))
+  ]);
 }
 
 function formatToSize(format = '') {
@@ -163,7 +117,6 @@ async function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood
   const teamText = cleanText(teamMood || accent.label, 36).toUpperCase();
   const promptText = cleanText(creativePrompt || 'Premium fictional motorsport fan artwork created for the PADDOX fan universe.', 160);
   const photo = safePhotoDataUri(photoDataUrl);
-  const brandIconDataUri = await getPaddoxBrandIconDataUri();
 
   const margin = isWide ? 54 : 58;
   const innerW = width - margin * 2;
@@ -252,17 +205,10 @@ async function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood
     <rect x="${margin+16}" y="${margin+16}" width="${innerW-32}" height="${innerH-32}" rx="30" fill="none" stroke="${primary}" stroke-opacity=".32"/>
 
     <g transform="translate(${textX},${isWide ? 70 : 82}) scale(${logoScale})">
-      <rect x="0" y="0" width="330" height="92" rx="24" fill="rgba(7,7,7,.44)" stroke="#fff" stroke-opacity=".08"/>
-      ${brandIconDataUri ? `
-        <circle cx="46" cy="46" r="42" fill="#070707" stroke="${primary}" stroke-opacity=".65" stroke-width="2"/>
-        <image href="${brandIconDataUri}" x="4" y="4" width="84" height="84" preserveAspectRatio="xMidYMid meet"/>
-      ` : `
-        <rect x="8" y="14" width="76" height="64" rx="18" fill="rgba(232,0,45,.08)" stroke="${primary}" stroke-opacity=".35"/>
-        <text x="46" y="54" text-anchor="middle" fill="#fff" font-family="Arial Black, Arial" font-size="22" letter-spacing="3">PDX</text>
-      `}
-      <text x="108" y="38" fill="#fff" font-family="Arial Black, Arial" font-size="31" letter-spacing="7">PADDO<tspan fill="${primary}">X</tspan></text>
-      <text x="111" y="65" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
-      <text x="111" y="83" fill="${secondary}" font-family="Arial Black, Arial" font-size="9" letter-spacing="3">BRAND LOGO ASSET</text>
+      <rect x="0" y="0" width="370" height="92" rx="24" fill="rgba(7,7,7,.44)" stroke="#fff" stroke-opacity=".08"/>
+      <text x="22" y="42" fill="#fff" font-family="Arial Black, Arial" font-size="36" letter-spacing="8">PADDO<tspan fill="${primary}">X</tspan></text>
+      <text x="25" y="68" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
+      <text x="25" y="86" fill="${secondary}" font-family="Arial Black, Arial" font-size="9" letter-spacing="3">A4.11C.6 FAST GENERATION</text>
     </g>
 
     ${photoLayer}
@@ -284,7 +230,7 @@ async function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood
       <path d="M174 29h40l-12 17h-42z" fill="${primary}" opacity=".85"/>
     </g>
 
-    <text x="${margin+26}" y="${footerY}" fill="#858585" font-family="Arial" font-size="16" letter-spacing="4">GENERATED BY PADDOX · NOT OFFICIAL DRIVER ENDORSEMENT · A4.11C.5</text>
+    <text x="${margin+26}" y="${footerY}" fill="#858585" font-family="Arial" font-size="16" letter-spacing="4">GENERATED BY PADDOX · NOT OFFICIAL DRIVER ENDORSEMENT · A4.11C.6</text>
     <text x="${width-margin-26}" y="${footerY}" fill="${primary}" font-family="Arial Black, Arial" font-size="21" text-anchor="end" letter-spacing="3">15 CREDITS</text>
   </svg>`;
 
@@ -295,14 +241,19 @@ async function uploadDataUriToCloudinary(dataUri, userId) {
   if (!cloudinary) return { url: dataUri, publicId: '', cloudinarySaved: false };
 
   try {
-    const result = await cloudinary.uploader.upload(dataUri, {
+    const result = await withTimeout(cloudinary.uploader.upload(dataUri, {
       folder: `paddox/ai-posters/${userId}`,
       resource_type: 'image',
       overwrite: false,
       unique_filename: true,
       use_filename: false,
       transformation: [{ quality: 'auto', fetch_format: 'auto' }]
-    });
+    }), 6500, null);
+
+    if (!result) {
+      console.warn('PADDOX AI poster Cloudinary save timed out. Returning data URI fallback.');
+      return { url: dataUri, publicId: '', cloudinarySaved: false, timeout: true };
+    }
 
     return {
       url: result.secure_url || result.url || dataUri,
@@ -379,7 +330,7 @@ exports.generatePoster = async (req, res) => {
       meta: {
         hasUserPhoto: !!body.photoDataUrl,
         realProviderEnabled: providerMode !== 'preview',
-        note: 'A4.11C foundation generates safe branded poster placeholder. A4.11C.2 can connect live Gemini image API.'
+        note: 'A4.11C.6 fast fallback: no remote logo fetch; Cloudinary save has timeout to prevent hanging.'
       }
     });
 
