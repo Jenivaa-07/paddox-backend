@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
    PADDOX — AI Fan Studio Generation Foundation
-   Phase A4.11C
+   Phase A4.11C.3
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -184,12 +184,19 @@ function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outp
     <rect x="${margin+16}" y="${margin+16}" width="${innerW-32}" height="${innerH-32}" rx="30" fill="none" stroke="${primary}" stroke-opacity=".32"/>
 
     <g transform="translate(${textX},${isWide ? 70 : 82}) scale(${logoScale})">
-      <circle cx="42" cy="42" r="42" fill="#0a0a0a" stroke="${primary}" stroke-opacity=".82" stroke-width="3"/>
-      <path d="M18 45c8-22 30-34 54-22 10 5 18 14 22 26H64c-8 0-14 4-17 12H25c-7 0-10-7-7-16z" fill="#f2f2f2"/>
-      <path d="M45 26h36L69 43H36z" fill="${primary}"/>
-      <path d="M27 60h42l-10 10H22z" fill="${primary}" opacity=".86"/>
-      <text x="106" y="34" fill="#fff" font-family="Arial Black, Arial" font-size="32" letter-spacing="7">PADDO<tspan fill="${primary}">X</tspan></text>
-      <text x="109" y="64" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
+      <g id="paddoxOfficialMark">
+        <circle cx="46" cy="46" r="44" fill="#070707" stroke="${primary}" stroke-opacity=".92" stroke-width="3"/>
+        <circle cx="46" cy="46" r="36" fill="rgba(255,255,255,.025)" stroke="#ffffff" stroke-opacity=".10" stroke-width="1"/>
+        <path d="M20 48 C22 28 37 18 58 18 C72 18 84 25 92 37 C82 33 70 31 58 34 C47 36 39 42 34 54 L22 54 C20 52 19 50 20 48 Z" fill="#f4f4f4"/>
+        <path d="M38 38 C51 29 69 30 86 38 L77 50 L44 50 C39 50 36 47 38 38 Z" fill="#171717" opacity=".98"/>
+        <path d="M55 22 L92 22 L78 38 L43 38 Z" fill="${primary}"/>
+        <path d="M25 58 H73 L62 71 H22 C17 71 15 65 20 61 Z" fill="${primary}" opacity=".94"/>
+        <path d="M31 55 H87 L76 64 H28 Z" fill="#ffffff" opacity=".92"/>
+        <path d="M84 45 L96 45 L86 57 L74 57 Z" fill="${primary}" opacity=".82"/>
+      </g>
+      <text x="112" y="36" fill="#fff" font-family="Arial Black, Arial" font-size="32" letter-spacing="7">PADDO<tspan fill="${primary}">X</tspan></text>
+      <text x="115" y="64" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
+      <text x="115" y="84" fill="${secondary}" font-family="Arial Black, Arial" font-size="9" letter-spacing="3">OFFICIAL BRAND MARK</text>
     </g>
 
     ${photoLayer}
