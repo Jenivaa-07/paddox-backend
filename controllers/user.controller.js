@@ -696,3 +696,74 @@ exports.adminAdjustFanPoints = async (req, res) => {
   }
 };
 
+
+
+/* ============================================================
+   PHASE A4.11A — PADDOX AI CREDITS FOUNDATION
+   Fan Points and AI Credits stay separate.
+   Fan Points = reputation. AI Credits = spendable generation balance.
+   ============================================================ */
+function normalizeAiCredits(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 50;
+}
+
+exports.adminAdjustAiCredits = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const mode = String(req.body.mode || 'add').toLowerCase();
+    const rawAmount = Number(req.body.amount || 0);
+    const reason = String(req.body.reason || '').trim();
+
+    const target = await User.findById(userId);
+    if (!target) return errorResponse(res, 404, 'User not found');
+
+    const before = normalizeAiCredits(target.aiCredits);
+    let delta = 0;
+
+    if (mode === 'reset') {
+      target.aiCredits = 50;
+      delta = 50 - before;
+    } else {
+      if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+        return errorResponse(res, 400, 'Valid AI credits amount required');
+      }
+
+      delta = mode === 'deduct' ? -Math.abs(Math.round(rawAmount)) : Math.abs(Math.round(rawAmount));
+      target.aiCredits = Math.max(0, before + delta);
+    }
+
+    await target.save({ validateBeforeSave:false });
+
+    return successResponse(res, 200, 'AI credits updated', {
+      user: publicUser(target),
+      before,
+      after: target.aiCredits,
+      delta,
+      reason,
+      defaultFreeCredits: 50,
+      standardGenerationCost: 15,
+      estimatedFreeGenerations: 3
+    });
+  } catch (err) {
+    return serverError(res, err, 'Admin AI credits update failed');
+  }
+};
+
+exports.getAiCredits = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('aiCredits');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    const aiCredits = normalizeAiCredits(user.aiCredits);
+
+    return successResponse(res, 200, 'AI credits fetched', {
+      aiCredits,
+      defaultFreeCredits: 50,
+      standardGenerationCost: 15,
+      estimatedFreeGenerations: Math.floor(aiCredits / 15)
+    });
+  } catch (err) {
+    return serverError(res, err, 'Get AI credits failed');
+  }
+};

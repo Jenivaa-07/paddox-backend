@@ -106,6 +106,14 @@ router.post(
   pickHandler(['updateAvatar', 'updateProfileAvatar', 'uploadAvatar'], 'Avatar update')
 );
 
+
+/* AI Credits */
+router.get(
+  '/ai-credits',
+  protect,
+  pickHandler(['getAiCredits', 'getUserAiCredits'], 'AI credits fetch')
+);
+
 /* Downloads */
 router.get(
   '/downloads',
@@ -226,6 +234,22 @@ router.patch(
   protect,
   adminOnly,
   pickHandler(['adminAdjustFanPoints', 'adjustAdminFanPoints'], 'Admin fan point update')
+);
+
+
+/* Admin: AI credits controls */
+router.put(
+  '/:id/ai-credits/adjust',
+  protect,
+  adminOnly,
+  pickHandler(['adminAdjustAiCredits', 'adjustAdminAiCredits'], 'Admin AI credits update')
+);
+
+router.patch(
+  '/:id/ai-credits/adjust',
+  protect,
+  adminOnly,
+  pickHandler(['adminAdjustAiCredits', 'adjustAdminAiCredits'], 'Admin AI credits update')
 );
 
 router.get(

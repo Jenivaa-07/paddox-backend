@@ -56,6 +56,11 @@ const userSchema = new mongoose.Schema({
   },
   fanPoints    : { type:Number, default:0 },
   fanTier      : { type:String, enum:['Regular','Pro Fan','Elite Fan','Legend'], default:'Regular' },
+
+  /* Phase A4.11A — PADDOX AI Credits wallet
+     Fan Points = reputation/ranking.
+     AI Credits = spendable balance for AI Fan Studio generation. */
+  aiCredits    : { type:Number, default:50, min:0 },
   refreshToken : { type:String, select:false },
   isBanned     : { type:Boolean, default:false },
   isVerified   : { type:Boolean, default:false },
