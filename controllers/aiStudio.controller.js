@@ -67,71 +67,152 @@ function buildSafePrompt(body = {}) {
   ].filter(Boolean).join(' ');
 }
 
-function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed }) {
+function safePhotoDataUri(value = '') {
+  const text = String(value || '').trim();
+  if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 1800000) {
+    return text.replace(/[\r\n]/g, '');
+  }
+  return '';
+}
+
+function posterAccentFromTeam(teamMood = '') {
+  const t = String(teamMood || '').toLowerCase();
+  if (t.includes('ferrari')) return { primary:'#e8002d', secondary:'#c9a84c', glow:'#b00022', label:'FERRARI RED' };
+  if (t.includes('red bull')) return { primary:'#244cff', secondary:'#f2c94c', glow:'#0b1740', label:'RACE BLUE' };
+  if (t.includes('mclaren')) return { primary:'#ff8700', secondary:'#00a3e0', glow:'#391700', label:'PAPAYA SPEED' };
+  if (t.includes('mercedes')) return { primary:'#00d2be', secondary:'#c8c8c8', glow:'#003a36', label:'SILVER ENERGY' };
+  if (t.includes('aston')) return { primary:'#006f62', secondary:'#c9a84c', glow:'#002e29', label:'EMERALD GARAGE' };
+  return { primary:'#e8002d', secondary:'#c9a84c', glow:'#51000f', label:'PADDOX RED' };
+}
+
+function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl }) {
   const { width, height, ratio } = formatToSize(outputFormat);
   const isWide = ratio === '16:9';
-  const titleSize = isWide ? 92 : 88;
-  const styleY = isWide ? 260 : 410;
-  const nameY = isWide ? 385 : 560;
-  const noteY = isWide ? 475 : 685;
-  const footerY = height - 82;
-  const escapedName = escapeSvg(String(fanName || 'PADDOX FAN').toUpperCase());
-  const escapedStyle = escapeSvg(style || 'VIP Paddock');
-  const escapedDriver = escapeSvg(driverInspiration || 'Driver-inspired');
-  const escapedTeam = escapeSvg(teamMood || 'PADDOX Red');
-  const escapedPrompt = escapeSvg(creativePrompt || 'Fictional motorsport fan artwork');
+  const isSquare = ratio === '1:1';
+  const accent = posterAccentFromTeam(teamMood);
+  const displayName = cleanText(fanName || 'PADDOX FAN', 44).toUpperCase();
+  const driverText = cleanText(driverInspiration || 'Driver-inspired', 52).toUpperCase();
+  const styleText = cleanText(style || 'VIP Paddock', 42).toUpperCase();
+  const teamText = cleanText(teamMood || accent.label, 36).toUpperCase();
+  const promptText = cleanText(creativePrompt || 'Premium fictional motorsport fan artwork created for the PADDOX fan universe.', 160);
+  const photo = safePhotoDataUri(photoDataUrl);
+
+  const margin = isWide ? 54 : 58;
+  const innerW = width - margin * 2;
+  const innerH = height - margin * 2;
+  const logoScale = isWide ? 0.82 : 1;
+  const titleSize = isWide ? 76 : isSquare ? 68 : 82;
+  const heroX = isWide ? width * 0.55 : width * 0.50;
+  const heroY = isWide ? height * 0.50 : height * 0.42;
+  const heroW = isWide ? width * 0.38 : width * 0.56;
+  const heroH = isWide ? height * 0.56 : height * 0.46;
+  const textX = isWide ? 78 : 76;
+  const textY = isWide ? height * 0.42 : height * 0.58;
+  const editionY = isWide ? height * 0.30 : height * 0.50;
+  const footerY = height - 78;
+
+  const escapedName = escapeSvg(displayName);
+  const escapedStyle = escapeSvg(styleText);
+  const escapedDriver = escapeSvg(driverText);
+  const escapedTeam = escapeSvg(teamText);
+  const escapedPrompt = escapeSvg(promptText);
+  const primary = accent.primary;
+  const secondary = accent.secondary;
+  const glow = accent.glow;
+
+  const photoLayer = photo ? `
+    <g clip-path="url(#heroClip)">
+      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="#121212"/>
+      <image href="${photo}" x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" preserveAspectRatio="xMidYMid slice" opacity=".72"/>
+      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="url(#heroShade)"/>
+    </g>` : `
+    <g clip-path="url(#heroClip)">
+      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="#121212"/>
+      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="url(#heroShade)"/>
+      <circle cx="${heroX}" cy="${heroY-heroH*.12}" r="${Math.min(heroW,heroH)*.17}" fill="rgba(255,255,255,.16)"/>
+      <path d="M${heroX-heroW*.20} ${heroY+heroH*.24} C${heroX-heroW*.13} ${heroY+heroH*.02} ${heroX+heroW*.13} ${heroY+heroH*.02} ${heroX+heroW*.20} ${heroY+heroH*.24} Z" fill="rgba(255,255,255,.13)"/>
+      <text x="${heroX}" y="${heroY+heroH*.40}" text-anchor="middle" fill="rgba(255,255,255,.18)" font-family="Arial Black, Arial" font-size="${isWide?28:34}" letter-spacing="8">FAN HERO</text>
+    </g>`;
 
   const svg = `
   <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <defs>
       <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#050505"/>
-        <stop offset=".48" stop-color="#101010"/>
-        <stop offset="1" stop-color="#260008"/>
+        <stop offset="0" stop-color="#030303"/>
+        <stop offset=".48" stop-color="#0b0b0b"/>
+        <stop offset="1" stop-color="${glow}"/>
       </linearGradient>
-      <radialGradient id="redGlow" cx="72%" cy="22%" r="60%">
-        <stop offset="0" stop-color="#e8002d" stop-opacity=".55"/>
-        <stop offset=".45" stop-color="#e8002d" stop-opacity=".14"/>
-        <stop offset="1" stop-color="#e8002d" stop-opacity="0"/>
+      <radialGradient id="redGlow" cx="78%" cy="22%" r="62%">
+        <stop offset="0" stop-color="${primary}" stop-opacity=".72"/>
+        <stop offset=".42" stop-color="${primary}" stop-opacity=".22"/>
+        <stop offset="1" stop-color="${primary}" stop-opacity="0"/>
       </radialGradient>
-      <filter id="blur"><feGaussianBlur stdDeviation="24"/></filter>
+      <radialGradient id="goldGlow" cx="20%" cy="73%" r="42%">
+        <stop offset="0" stop-color="${secondary}" stop-opacity=".36"/>
+        <stop offset="1" stop-color="${secondary}" stop-opacity="0"/>
+      </radialGradient>
+      <linearGradient id="heroShade" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#000" stop-opacity=".10"/>
+        <stop offset=".52" stop-color="${primary}" stop-opacity=".18"/>
+        <stop offset="1" stop-color="#000" stop-opacity=".70"/>
+      </linearGradient>
+      <clipPath id="heroClip"><rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" rx="30"/></clipPath>
+      <filter id="soft"><feGaussianBlur stdDeviation="28"/></filter>
     </defs>
+
     <rect width="100%" height="100%" fill="url(#bg)"/>
     <rect width="100%" height="100%" fill="url(#redGlow)"/>
-    <g opacity=".16">
-      <path d="M-100 ${height*.22} H${width+200}" stroke="#ffffff" stroke-width="1"/>
-      <path d="M-120 ${height*.36} H${width+200}" stroke="#e8002d" stroke-width="3"/>
-      <path d="M-80 ${height*.62} H${width+120}" stroke="#ffffff" stroke-width="1"/>
-      <path d="M${width*.12} -60 L${width*.62} ${height+90}" stroke="#e8002d" stroke-width="2"/>
-      <path d="M${width*.72} -60 L${width*.22} ${height+90}" stroke="#ffffff" stroke-width="1"/>
+    <rect width="100%" height="100%" fill="url(#goldGlow)"/>
+
+    <g opacity=".10">
+      <path d="M0 ${height*.22} H${width}" stroke="#fff" stroke-width="1"/>
+      <path d="M0 ${height*.38} H${width}" stroke="${primary}" stroke-width="3"/>
+      <path d="M0 ${height*.62} H${width}" stroke="#fff" stroke-width="1"/>
+      <path d="M${width*.10} -80 L${width*.60} ${height+120}" stroke="${primary}" stroke-width="2"/>
+      <path d="M${width*.78} -80 L${width*.25} ${height+120}" stroke="#fff" stroke-width="1"/>
+      <path d="M${width*.92} -20 L${width*.42} ${height+130}" stroke="${secondary}" stroke-width="1"/>
     </g>
-    <g opacity=".22" filter="url(#blur)">
-      <circle cx="${width*.78}" cy="${height*.28}" r="${Math.min(width,height)*.24}" fill="#e8002d"/>
-      <circle cx="${width*.28}" cy="${height*.70}" r="${Math.min(width,height)*.18}" fill="#c9a84c"/>
+
+    <g opacity=".16" filter="url(#soft)">
+      <circle cx="${width*.82}" cy="${height*.25}" r="${Math.min(width,height)*.24}" fill="${primary}"/>
+      <circle cx="${width*.22}" cy="${height*.72}" r="${Math.min(width,height)*.18}" fill="${secondary}"/>
     </g>
-    <rect x="42" y="42" width="${width-84}" height="${height-84}" rx="36" fill="none" stroke="#ffffff" stroke-opacity=".14"/>
-    <rect x="58" y="58" width="${width-116}" height="${height-116}" rx="30" fill="none" stroke="#e8002d" stroke-opacity=".28"/>
-    <g transform="translate(${isWide ? 74 : 70},${isWide ? 86 : 92})">
-      <circle cx="42" cy="42" r="42" fill="#0b0b0b" stroke="#e8002d" stroke-opacity=".7" stroke-width="3"/>
-      <path d="M22 45c7-18 24-27 43-17 8 4 14 11 17 20H59c-6 0-10 3-12 9H25c-5 0-7-5-3-12z" fill="#f5f5f5" opacity=".92"/>
-      <path d="M43 30h31l-9 13H37z" fill="#e8002d" opacity=".96"/>
-      <path d="M30 60h35l-8 8H27z" fill="#e8002d" opacity=".78"/>
-      <text x="104" y="35" fill="#fff" font-family="Arial Black, Arial" font-size="34" letter-spacing="5">PADDO<tspan fill="#e8002d">X</tspan></text>
-      <text x="106" y="64" fill="#999" font-family="Arial" font-size="14" letter-spacing="4">AI FAN STUDIO</text>
+
+    <text x="${width*.50}" y="${height*.52}" text-anchor="middle" fill="rgba(255,255,255,.025)" font-family="Arial Black, Arial" font-size="${Math.min(width,height)*.22}" letter-spacing="10">PADDOX</text>
+
+    <rect x="${margin}" y="${margin}" width="${innerW}" height="${innerH}" rx="38" fill="rgba(255,255,255,.018)" stroke="#ffffff" stroke-opacity=".13"/>
+    <rect x="${margin+16}" y="${margin+16}" width="${innerW-32}" height="${innerH-32}" rx="30" fill="none" stroke="${primary}" stroke-opacity=".32"/>
+
+    <g transform="translate(${textX},${isWide ? 70 : 82}) scale(${logoScale})">
+      <circle cx="42" cy="42" r="42" fill="#0a0a0a" stroke="${primary}" stroke-opacity=".82" stroke-width="3"/>
+      <path d="M18 45c8-22 30-34 54-22 10 5 18 14 22 26H64c-8 0-14 4-17 12H25c-7 0-10-7-7-16z" fill="#f2f2f2"/>
+      <path d="M45 26h36L69 43H36z" fill="${primary}"/>
+      <path d="M27 60h42l-10 10H22z" fill="${primary}" opacity=".86"/>
+      <text x="106" y="34" fill="#fff" font-family="Arial Black, Arial" font-size="32" letter-spacing="7">PADDO<tspan fill="${primary}">X</tspan></text>
+      <text x="109" y="64" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
     </g>
-    <text x="${isWide ? 76 : 70}" y="${styleY}" fill="#c9a84c" font-family="Arial, sans-serif" font-size="24" letter-spacing="6">${escapedStyle.toUpperCase()} · ${escapedTeam.toUpperCase()}</text>
-    <text x="${isWide ? 76 : 70}" y="${nameY}" fill="#fff" font-family="Arial Black, Arial" font-size="${titleSize}" letter-spacing="4">${escapedName}</text>
-    <text x="${isWide ? 80 : 74}" y="${noteY}" fill="#e8002d" font-family="Arial Black, Arial" font-size="32" letter-spacing="3">${escapedDriver.toUpperCase()}</text>
-    <foreignObject x="${isWide ? 78 : 74}" y="${noteY+36}" width="${isWide ? width*.48 : width-148}" height="150">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,sans-serif;color:#d7d7d7;font-size:25px;line-height:1.35;letter-spacing:.5px;">${escapedPrompt}</div>
+
+    ${photoLayer}
+    <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" rx="30" fill="none" stroke="${secondary}" stroke-opacity=".34" stroke-width="2"/>
+    <path d="M${heroX-heroW*.46} ${heroY-heroH*.38} H${heroX+heroW*.46}" stroke="${primary}" stroke-opacity=".45" stroke-width="2"/>
+    <path d="M${heroX-heroW*.46} ${heroY+heroH*.38} H${heroX+heroW*.46}" stroke="#fff" stroke-opacity=".16" stroke-width="1"/>
+
+    <text x="${textX}" y="${editionY}" fill="${secondary}" font-family="Arial Black, Arial" font-size="${isWide?18:20}" letter-spacing="6">${escapedStyle} EDITION · ${escapedTeam}</text>
+    <text x="${textX}" y="${textY}" fill="#fff" font-family="Arial Black, Arial" font-size="${titleSize}" letter-spacing="4">${escapedName}</text>
+    <text x="${textX+4}" y="${textY+54}" fill="${primary}" font-family="Arial Black, Arial" font-size="${isWide?25:30}" letter-spacing="4">${escapedDriver}</text>
+    <foreignObject x="${textX+4}" y="${textY+78}" width="${isWide ? width*.44 : width*.55}" height="130">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,sans-serif;color:#dadada;font-size:${isWide?20:23}px;line-height:1.32;letter-spacing:.4px;">${escapedPrompt}</div>
     </foreignObject>
-    <g opacity=".9">
-      <rect x="${width-370}" y="${height-240}" width="260" height="124" rx="24" fill="#090909" fill-opacity=".74" stroke="#ffffff" stroke-opacity=".12"/>
-      <text x="${width-338}" y="${height-190}" fill="#999" font-family="Arial" font-size="15" letter-spacing="3">FICTIONAL</text>
-      <text x="${width-338}" y="${height-150}" fill="#fff" font-family="Arial Black, Arial" font-size="29" letter-spacing="2">FAN ART</text>
+
+    <g transform="translate(${width-355},${height-238})">
+      <rect width="252" height="126" rx="24" fill="#060606" fill-opacity=".76" stroke="#ffffff" stroke-opacity=".13"/>
+      <text x="32" y="46" fill="#999" font-family="Arial" font-size="14" letter-spacing="4">FICTIONAL</text>
+      <text x="32" y="86" fill="#fff" font-family="Arial Black, Arial" font-size="30" letter-spacing="3">FAN ART</text>
+      <path d="M174 29h40l-12 17h-42z" fill="${primary}" opacity=".85"/>
     </g>
-    <text x="70" y="${footerY}" fill="#777" font-family="Arial" font-size="17" letter-spacing="4">GENERATED BY PADDOX · NOT OFFICIAL DRIVER ENDORSEMENT</text>
-    <text x="${width-70}" y="${footerY}" fill="#e8002d" font-family="Arial Black, Arial" font-size="20" text-anchor="end" letter-spacing="3">15 CREDITS</text>
+
+    <text x="${margin+26}" y="${footerY}" fill="#858585" font-family="Arial" font-size="16" letter-spacing="4">GENERATED BY PADDOX · NOT OFFICIAL DRIVER ENDORSEMENT</text>
+    <text x="${width-margin-26}" y="${footerY}" fill="${primary}" font-family="Arial Black, Arial" font-size="21" text-anchor="end" letter-spacing="3">15 CREDITS</text>
   </svg>`;
 
   return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
@@ -180,7 +261,11 @@ exports.generatePoster = async (req, res) => {
     const body = req.body || {};
     const style = cleanText(body.style || 'VIP Paddock', 80);
     const tone = cleanText(body.tone || '', 180);
-    const fanName = cleanText(body.fanName || `${user.firstName || 'PADDOX'} ${user.lastName || 'FAN'}`, 60);
+    const submittedFanName = cleanText(body.fanName || '', 60);
+    const profileFanName = cleanText(`${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email?.split('@')?.[0] || 'PADDOX FAN', 60);
+    const fanName = (!submittedFanName || submittedFanName.toLowerCase() === 'paddox fan' || submittedFanName.toLowerCase() === 'your display name')
+      ? profileFanName
+      : submittedFanName;
     const driverInspiration = cleanText(body.driverInspiration || 'Driver-inspired', 80);
     const teamMood = cleanText(body.teamMood || 'PADDOX Red', 80);
     const outputFormat = cleanText(body.outputFormat || 'Portrait 4:5', 40);
@@ -195,7 +280,7 @@ exports.generatePoster = async (req, res) => {
       ? 'gemini-ready-fallback'
       : 'preview';
 
-    const dataUri = buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed });
+    const dataUri = buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
     const uploaded = await uploadDataUriToCloudinary(dataUri, user._id.toString());
 
     user.aiCredits = Math.max(0, before - STANDARD_AI_POSTER_COST);
