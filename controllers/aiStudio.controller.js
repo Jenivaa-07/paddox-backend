@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
    PADDOX — AI Fan Studio Puter Frontend Provider Test
-   Phase A4.11J
+   Phase A4.11J.1
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -155,7 +155,7 @@ async function finalizeExternalPosterGeneration({ user, body, cost, before }) {
       creativePrompt: cleanText(payload.fan?.tagline || payload.tagline || body.tagline || '', 500),
       promptUsed: cleanText(body.prompt || payload.prompt || '', 1500),
       provider: cleanText(body.externalProvider || 'puter', 40),
-      providerMode: cleanText(body.externalProviderMode || 'puter-frontend', 60),
+      providerMode: cleanText(body.externalProviderMode || 'puter-photo-reference', 60),
       cost,
       creditsBefore: before,
       creditsAfter: normalizeAiCredits(user.aiCredits),
@@ -172,6 +172,7 @@ async function finalizeExternalPosterGeneration({ user, body, cost, before }) {
         puterProvider: body.puterProvider || '',
         puterModel: body.puterModel || '',
         puterRequestLabel: body.puterRequestLabel || '',
+        puterIdentitySafe: Boolean(body.puterIdentitySafe),
         aspectRatio: body.aspectRatio || payload.output?.aspectRatio || '4:5'
       }
     });
@@ -192,14 +193,14 @@ async function finalizeExternalPosterGeneration({ user, body, cost, before }) {
     creditsBefore: before,
     creditsAfter: normalizeAiCredits(user.aiCredits),
     provider: cleanText(body.externalProvider || 'puter', 40) || 'puter',
-    providerMode: cleanText(body.externalProviderMode || 'puter-frontend', 60) || 'puter-frontend',
+    providerMode: cleanText(body.externalProviderMode || 'puter-photo-reference', 60) || 'puter-photo-reference',
     model: cleanText(body.puterModel || 'gpt-image-1-mini', 80),
     providerText: 'Image created in PADDOX AI Studio through Puter.js frontend provider flow.',
     savedToDatabase: Boolean(posterDoc),
     posterId: posterDoc?._id || null,
     fallbackFrom: '',
     providerErrors: [],
-    note: 'A4.11J: Puter.js frontend provider test mode. PADDOX Credits were deducted only after a successful Puter image was returned.'
+    note: 'A4.11J.1: Puter.js photo-reference strict mode. PADDOX Credits were deducted only after a successful Puter photo-reference image was returned.'
   };
 }
 
