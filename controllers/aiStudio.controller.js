@@ -59,6 +59,168 @@ function isGeminiQuotaError(status, payload = {}) {
     text.includes('free tier');
 }
 
+function getCloudflareConfig() {
+  return {
+    accountId: String(process.env.CLOUDFLARE_ACCOUNT_ID || '').trim(),
+    apiToken: String(process.env.CLOUDFLARE_API_TOKEN || '').trim(),
+    model: String(process.env.CLOUDFLARE_IMAGE_MODEL || '@cf/stabilityai/stable-diffusion-xl-base-1.0').trim()
+  };
+}
+
+function hasCloudflareConfig() {
+  const cfg = getCloudflareConfig();
+  return !!(cfg.accountId && cfg.apiToken && cfg.model);
+}
+
+function isCloudflareQuotaError(status, payload = {}) {
+  const text = JSON.stringify(payload || {}).toLowerCase();
+  return status === 429 ||
+    text.includes('quota') ||
+    text.includes('limit') ||
+    text.includes('too many requests') ||
+    text.includes('neurons');
+}
+
+function simplifyPromptForCloudflare(prompt = '') {
+  const raw = String(prompt || '').replace(/\r\n/g, '\n').trim();
+  const lines = raw
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^avoid:/i.test(line))
+    .filter(line => !/exact uploaded fan face|primary identity reference|driver must look recognizable/i.test(line));
+
+  const compact = lines.join(' ');
+  const fallback = 'Create a photorealistic premium motorsport fan poster in a Formula racing pit lane, cinematic sports photography, realistic race suit, dramatic lighting, sharp focus, premium editorial finish.';
+  return cleanText(compact || fallback, 1800);
+}
+
+async function generateWithCloudflare({ prompt }) {
+  const cfg = getCloudflareConfig();
+
+  if (!cfg.accountId || !cfg.apiToken) {
+    const error = new Error('Cloudflare Workers AI credentials are missing.');
+    error.code = 'CLOUDFLARE_CONFIG_MISSING';
+    throw error;
+  }
+
+  const endpoint = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(cfg.accountId)}/ai/run/${cfg.model}`;
+  const cfPrompt = simplifyPromptForCloudflare(prompt);
+
+  const response = await axios.post(endpoint, {
+    prompt: cfPrompt,
+    num_steps: Number(process.env.CLOUDFLARE_IMAGE_STEPS || 20),
+    guidance: Number(process.env.CLOUDFLARE_IMAGE_GUIDANCE || 7.5)
+  }, {
+    timeout: Number(process.env.CLOUDFLARE_TIMEOUT_MS || 90000),
+    responseType: 'arraybuffer',
+    headers: {
+      Authorization: `Bearer ${cfg.apiToken}`,
+      'Content-Type': 'application/json',
+      Accept: 'image/png'
+    },
+    validateStatus: () => true
+  });
+
+  const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+
+  if (response.status < 200 || response.status >= 300) {
+    let detail = '';
+    try {
+      detail = Buffer.from(response.data || '').toString('utf8');
+    } catch {}
+
+    const err = new Error(detail || `Cloudflare Workers AI request failed with ${response.status}`);
+    err.status = response.status;
+    err.details = detail;
+    err.code = isCloudflareQuotaError(response.status, detail) ? 'CLOUDFLARE_QUOTA_EXCEEDED' : 'CLOUDFLARE_REQUEST_FAILED';
+    err.model = cfg.model;
+    throw err;
+  }
+
+  if (!contentType.includes('image')) {
+    const text = Buffer.from(response.data || '').toString('utf8');
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch {}
+
+    const base64 =
+      parsed?.result?.image ||
+      parsed?.result?.data ||
+      parsed?.image ||
+      parsed?.data ||
+      '';
+
+    if (base64) {
+      return {
+        dataUri: `data:image/png;base64,${String(base64).replace(/^data:image\/\w+;base64,/, '')}`,
+        model: cfg.model,
+        text: 'Cloudflare Workers AI image returned as JSON/base64.',
+        provider: 'cloudflare',
+        promptUsed: cfPrompt
+      };
+    }
+
+    const err = new Error(text || 'Cloudflare Workers AI did not return an image.');
+    err.code = 'CLOUDFLARE_NO_IMAGE_RETURNED';
+    err.model = cfg.model;
+    throw err;
+  }
+
+  const base64 = Buffer.from(response.data).toString('base64');
+  return {
+    dataUri: `data:${contentType.split(';')[0] || 'image/png'};base64,${base64}`,
+    model: cfg.model,
+    text: 'Cloudflare Workers AI image generated.',
+    provider: 'cloudflare',
+    promptUsed: cfPrompt
+  };
+}
+
+async function generateImageWithProviders({ prompt, photoDataUrl }) {
+  const errors = [];
+
+  try {
+    const generated = await generateImageWithProviders({ prompt, photoDataUrl });
+    return {
+      ...gemini,
+      provider: generated.provider || 'gemini',
+      providerMode: 'gemini-live'
+    };
+  } catch (err) {
+    errors.push({ provider: generated.provider || 'gemini', code: err.code, message: err.message, status: err.status, details: err.details });
+    const shouldTryCloudflare =
+      err.code === 'GEMINI_QUOTA_EXCEEDED' ||
+      err.code === 'GEMINI_REQUEST_FAILED' ||
+      err.code === 'GEMINI_KEY_MISSING' ||
+      err.code === 'GEMINI_NO_IMAGE_RETURNED';
+
+    if (!shouldTryCloudflare) throw err;
+  }
+
+  if (hasCloudflareConfig()) {
+    try {
+      const cloudflare = await generateWithCloudflare({ prompt });
+      return {
+        ...cloudflare,
+        provider: 'cloudflare',
+        providerMode: 'cloudflare-fallback',
+        fallbackFrom: 'gemini',
+        providerErrors: errors
+      };
+    } catch (err) {
+      errors.push({ provider: 'cloudflare', code: err.code, message: err.message, status: err.status, details: err.details });
+    }
+  } else {
+    errors.push({ provider: 'cloudflare', code: 'CLOUDFLARE_CONFIG_MISSING', message: 'Cloudflare env values are not configured.' });
+  }
+
+  const final = new Error('Gemini and Cloudflare image generation are unavailable right now. No PADDOX Credits were used.');
+  final.code = 'ALL_IMAGE_PROVIDERS_FAILED';
+  final.details = errors;
+  final.model = getGeminiModel();
+  throw final;
+}
+
 function safePhotoDataUri(value = '') {
   const text = String(value || '').trim();
   if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 6000000) {
@@ -249,7 +411,7 @@ exports.generatePoster = async (req, res) => {
     const prompt = buildPromptFromRequest(body);
     const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
 
-    const gemini = await generateWithGemini({ prompt, photoDataUrl });
+    const generated = await generateImageWithProviders({ prompt, photoDataUrl });
 
     user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
@@ -258,8 +420,8 @@ exports.generatePoster = async (req, res) => {
 
     return successResponse(res, 201, 'Gemini image generated successfully.', {
       image: {
-        url: gemini.dataUri,
-        dataUri: gemini.dataUri,
+        url: generated.dataUri,
+        dataUri: generated.dataUri,
         width: outputSize.width,
         height: outputSize.height,
         cloudinarySaved: false
@@ -268,17 +430,19 @@ exports.generatePoster = async (req, res) => {
       cost,
       creditsBefore: before,
       creditsAfter: user.aiCredits,
-      provider: 'gemini',
-      providerMode: 'live-simple',
-      model: gemini.model,
-      geminiText: gemini.text,
+      provider: generated.provider || 'gemini',
+      providerMode: generated.providerMode || 'live-simple',
+      model: generated.model,
+      providerText: generated.text,
       savedToDatabase: false,
-      note: 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
+      fallbackFrom: generated.fallbackFrom || '',
+      providerErrors: generated.providerErrors || [],
+      note: generated.provider === 'cloudflare' ? 'A4.11H.3: Gemini failed, Cloudflare Workers AI fallback generated the image.' : 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
     });
   } catch (err) {
     const status =
       err.code === 'GEMINI_KEY_MISSING' ? 503 :
-      err.code === 'GEMINI_QUOTA_EXCEEDED' ? 429 :
+      (err.code === 'GEMINI_QUOTA_EXCEEDED' || err.code === 'CLOUDFLARE_QUOTA_EXCEEDED' || err.code === 'ALL_IMAGE_PROVIDERS_FAILED') ? 429 :
       500;
 
     let currentCredits = null;
@@ -294,16 +458,22 @@ exports.generatePoster = async (req, res) => {
       success: false,
       message: err.message || 'Gemini generation failed',
       data: {
-        provider: 'gemini',
-        providerMode: 'live-simple',
+        provider: generated.provider || 'gemini',
+        providerMode: generated.providerMode || 'live-simple',
         model: err.model || getGeminiModel(),
+        cloudflareModel: getCloudflareConfig().model,
         code: err.code || 'GEMINI_GENERATION_FAILED',
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
-        retryAdvice: err.code === 'GEMINI_QUOTA_EXCEEDED'
-          ? 'Gemini free image quota is exhausted for this key/model. Wait for quota reset or use another API key/model.'
-          : ''
+        providerErrors: err.details || [],
+        retryAdvice: err.code === 'ALL_IMAGE_PROVIDERS_FAILED'
+          ? 'Gemini failed and Cloudflare fallback also failed or is not configured. Check Render env values and provider quotas.'
+          : err.code === 'GEMINI_QUOTA_EXCEEDED'
+            ? 'Gemini free image quota is exhausted. Cloudflare fallback should run if configured.'
+            : err.code === 'CLOUDFLARE_QUOTA_EXCEEDED'
+              ? 'Cloudflare Workers AI quota is exhausted. Wait for daily reset or upgrade quota.'
+              : ''
       }
     });
   }
