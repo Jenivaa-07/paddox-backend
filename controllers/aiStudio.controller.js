@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Gemini Only Production Mode
-   Phase A4.11H.4
+   PADDOX — AI Fan Studio Gemini Only Compatibility Fix
+   Phase A4.11H.4.1
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -46,8 +46,25 @@ function getGeminiModelCandidates() {
   return [
     configured,
     'gemini-2.5-flash-image',
+    'gemini-2.5-flash-image-preview',
     'gemini-2.0-flash-preview-image-generation'
   ].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
+}
+
+function getGeminiAspectRatio(aspect = '') {
+  const a = String(aspect || '').toLowerCase();
+  if (a.includes('1:1')) return '1:1';
+  if (a.includes('9:16')) return '9:16';
+  if (a.includes('16:9')) return '16:9';
+  if (a.includes('21:9')) return '21:9';
+  return '4:5';
+}
+
+function sanitizeGeminiDetail(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  return text
+    .replace(/AIza[0-9A-Za-z_\-]{20,}/g, '[REDACTED_GEMINI_KEY]')
+    .slice(0, 1800);
 }
 
 function isGeminiQuotaError(status, payload = {}) {
@@ -59,9 +76,9 @@ function isGeminiQuotaError(status, payload = {}) {
     text.includes('free tier');
 }
 
-async function generateImageWithGeminiOnly({ prompt, photoDataUrl }) {
+async function generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio }) {
   try {
-    const gemini = await generateWithGemini({ prompt, photoDataUrl });
+    const gemini = await generateWithGemini({ prompt, photoDataUrl, aspectRatio });
     return {
       ...gemini,
       provider: 'gemini',
@@ -128,27 +145,10 @@ function buildPromptFromRequest(body = {}) {
   ].join('\n');
 }
 
-async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl }) {
-  const parts = [{ text: prompt }];
-  const photo = safePhotoDataUri(photoDataUrl);
-  const imagePart = splitDataUri(photo);
-  if (imagePart) {
-    parts.push({
-      inline_data: {
-        mime_type: imagePart.mimeType,
-        data: imagePart.data
-      }
-    });
-  }
+async function postGeminiRequest({ apiVersion, model, apiKey, body }) {
+  const endpoint = `https://generativelanguage.googleapis.com/${apiVersion}/models/${encodeURIComponent(model)}:generateContent`;
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-
-  const response = await axios.post(endpoint, {
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE']
-    }
-  }, {
+  return axios.post(endpoint, body, {
     timeout: Number(process.env.GEMINI_TIMEOUT_MS || 90000),
     headers: {
       'Content-Type': 'application/json',
@@ -156,17 +156,9 @@ async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl }) {
     },
     validateStatus: () => true
   });
+}
 
-  if (response.status < 200 || response.status >= 300) {
-    const msg = response.data?.error?.message || `Gemini request failed with ${response.status}`;
-    const err = new Error(msg);
-    err.status = response.status;
-    err.details = response.data?.error || response.data || null;
-    err.code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
-    err.model = model;
-    throw err;
-  }
-
+function readGeminiImageResponse(response, model) {
   const candidates = response.data?.candidates || [];
   let text = '';
 
@@ -190,10 +182,103 @@ async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl }) {
   const noImage = new Error(text.trim() || 'Gemini returned text only, not an image.');
   noImage.code = 'GEMINI_NO_IMAGE_RETURNED';
   noImage.model = model;
+  noImage.details = response.data || null;
   throw noImage;
 }
 
-async function generateWithGemini({ prompt, photoDataUrl }) {
+async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectRatio }) {
+  const parts = [{ text: prompt }];
+  const photo = safePhotoDataUri(photoDataUrl);
+  const imagePart = splitDataUri(photo);
+  if (imagePart) {
+    parts.push({
+      inline_data: {
+        mime_type: imagePart.mimeType,
+        data: imagePart.data
+      }
+    });
+  }
+
+  const apiVersions = String(process.env.GEMINI_API_VERSION || '')
+    ? [String(process.env.GEMINI_API_VERSION).trim()]
+    : ['v1', 'v1beta'];
+
+  const aspect = getGeminiAspectRatio(aspectRatio);
+  const bodies = [
+    {
+      label: 'stable-response-format',
+      body: {
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          responseFormat: {
+            image: { aspectRatio: aspect }
+          }
+        }
+      }
+    },
+    {
+      label: 'legacy-response-modalities',
+      body: {
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE']
+        }
+      }
+    }
+  ];
+
+  const attempts = [];
+
+  for (const apiVersion of apiVersions) {
+    for (const item of bodies) {
+      const response = await postGeminiRequest({ apiVersion, model, apiKey, body: item.body });
+
+      if (response.status >= 200 && response.status < 300) {
+        try {
+          const parsed = readGeminiImageResponse(response, model);
+          return { ...parsed, apiVersion, requestMode: item.label };
+        } catch (err) {
+          attempts.push({
+            apiVersion,
+            model,
+            requestMode: item.label,
+            code: err.code,
+            status: response.status,
+            message: err.message,
+            detail: sanitizeGeminiDetail(err.details || response.data)
+          });
+        }
+      } else {
+        const detail = response.data?.error || response.data || null;
+        const message = response.data?.error?.message || `Gemini request failed with ${response.status}`;
+        const code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
+
+        attempts.push({
+          apiVersion,
+          model,
+          requestMode: item.label,
+          code,
+          status: response.status,
+          message,
+          detail: sanitizeGeminiDetail(detail)
+        });
+
+        /* Quota errors will not be fixed by changing request shape for the same key. */
+        if (code === 'GEMINI_QUOTA_EXCEEDED') break;
+      }
+    }
+  }
+
+  const last = attempts[attempts.length - 1] || {};
+  const err = new Error(last.message || 'Gemini image request failed.');
+  err.status = last.status || 503;
+  err.details = attempts;
+  err.code = attempts.some(a => a.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : (last.code || 'GEMINI_REQUEST_FAILED');
+  err.model = model;
+  throw err;
+}
+
+async function generateWithGemini({ prompt, photoDataUrl, aspectRatio }) {
   const apiKey = getGeminiApiKey();
 
   if (!apiKey) {
@@ -207,18 +292,19 @@ async function generateWithGemini({ prompt, photoDataUrl }) {
 
   for (const model of models) {
     try {
-      return await requestGeminiImage({ model, apiKey, prompt, photoDataUrl });
+      return await requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectRatio });
     } catch (err) {
-      errors.push({ model, code: err.code, message: err.message, status: err.status });
-      /* If one model has free-tier quota exhausted, try the next image-capable model once. */
-      if (err.code !== 'GEMINI_QUOTA_EXCEEDED' && err.code !== 'GEMINI_REQUEST_FAILED') {
+      const detailList = Array.isArray(err.details) ? err.details : [{ detail: sanitizeGeminiDetail(err.details || err.message) }];
+      errors.push({ model, code: err.code, message: err.message, status: err.status, attempts: detailList });
+
+      if (err.code !== 'GEMINI_QUOTA_EXCEEDED' && err.code !== 'GEMINI_REQUEST_FAILED' && err.code !== 'GEMINI_NO_IMAGE_RETURNED') {
         throw err;
       }
     }
   }
 
-  const final = new Error('Gemini free image quota is exhausted or unavailable for this API key. No PADDOX Credits were used.');
-  final.code = 'GEMINI_QUOTA_EXCEEDED';
+  const final = new Error('Gemini image generation is unavailable for this API key/model right now. No PADDOX Credits were used.');
+  final.code = errors.some(e => e.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
   final.details = errors;
   final.model = models[0] || getGeminiModel();
   throw final;
@@ -269,7 +355,7 @@ exports.generatePoster = async (req, res) => {
     const prompt = buildPromptFromRequest(body);
     const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
 
-    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl });
+    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || "" });
 
     user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
@@ -291,11 +377,13 @@ exports.generatePoster = async (req, res) => {
       provider: generated.provider || 'gemini',
       providerMode: generated.providerMode || 'gemini-live',
       model: generated.model,
+      apiVersion: generated.apiVersion || '',
+      requestMode: generated.requestMode || '',
       providerText: generated.text,
       savedToDatabase: false,
       fallbackFrom: '',
       providerErrors: [],
-      note: 'A4.11H.4: Gemini-only production mode. No fallback image is shown if Gemini fails.'
+      note: 'A4.11H.4.1: Gemini-only compatibility mode using stable REST image config first. No fallback image is shown if Gemini fails.'
     });
   } catch (err) {
     const status = err.code === 'GEMINI_QUOTA_EXCEEDED' ? 503 : 503;
@@ -320,8 +408,9 @@ exports.generatePoster = async (req, res) => {
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
-        providerErrors: [],
-        retryAdvice: 'Check the Gemini API key, model access, and quota in Render logs. PADDOX Credits remain safe.'
+        providerErrors: Array.isArray(err.details) ? err.details : [],
+        geminiOriginalMessage: err.originalMessage || '',
+        retryAdvice: 'Check providerErrors in the response or Render logs. PADDOX Credits remain safe.'
       }
     });
   }
