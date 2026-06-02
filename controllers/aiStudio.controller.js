@@ -73,7 +73,7 @@ function hasCloudflareConfig() {
 }
 
 function isCloudflareQuotaError(status, payload = {}) {
-  const text = JSON.stringify(payload || {}).toLowerCase();
+  const text = typeof payload === 'string' ? payload.toLowerCase() : JSON.stringify(payload || {}).toLowerCase();
   return status === 429 ||
     text.includes('quota') ||
     text.includes('limit') ||
@@ -83,14 +83,14 @@ function isCloudflareQuotaError(status, payload = {}) {
 
 function simplifyPromptForCloudflare(prompt = '') {
   const raw = String(prompt || '').replace(/\r\n/g, '\n').trim();
-  const lines = raw
+  const compact = raw
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
     .filter(line => !/^avoid:/i.test(line))
-    .filter(line => !/exact uploaded fan face|primary identity reference|driver must look recognizable/i.test(line));
+    .filter(line => !/exact uploaded fan face|primary identity reference|preserve the exact fan face/i.test(line))
+    .join(' ');
 
-  const compact = lines.join(' ');
   const fallback = 'Create a photorealistic premium motorsport fan poster in a Formula racing pit lane, cinematic sports photography, realistic race suit, dramatic lighting, sharp focus, premium editorial finish.';
   return cleanText(compact || fallback, 1800);
 }
@@ -126,10 +126,7 @@ async function generateWithCloudflare({ prompt }) {
 
   if (response.status < 200 || response.status >= 300) {
     let detail = '';
-    try {
-      detail = Buffer.from(response.data || '').toString('utf8');
-    } catch {}
-
+    try { detail = Buffer.from(response.data || '').toString('utf8'); } catch {}
     const err = new Error(detail || `Cloudflare Workers AI request failed with ${response.status}`);
     err.status = response.status;
     err.details = detail;
@@ -153,9 +150,10 @@ async function generateWithCloudflare({ prompt }) {
     if (base64) {
       return {
         dataUri: `data:image/png;base64,${String(base64).replace(/^data:image\/\w+;base64,/, '')}`,
-        model: cfg.model,
         text: 'Cloudflare Workers AI image returned as JSON/base64.',
+        model: cfg.model,
         provider: 'cloudflare',
+        providerMode: 'cloudflare-fallback',
         promptUsed: cfPrompt
       };
     }
@@ -169,9 +167,10 @@ async function generateWithCloudflare({ prompt }) {
   const base64 = Buffer.from(response.data).toString('base64');
   return {
     dataUri: `data:${contentType.split(';')[0] || 'image/png'};base64,${base64}`,
-    model: cfg.model,
     text: 'Cloudflare Workers AI image generated.',
+    model: cfg.model,
     provider: 'cloudflare',
+    providerMode: 'cloudflare-fallback',
     promptUsed: cfPrompt
   };
 }
@@ -180,14 +179,15 @@ async function generateImageWithProviders({ prompt, photoDataUrl }) {
   const errors = [];
 
   try {
-    const generated = await generateImageWithProviders({ prompt, photoDataUrl });
+    const gemini = await generateWithGemini({ prompt, photoDataUrl });
     return {
       ...gemini,
-      provider: generated.provider || 'gemini',
-      providerMode: 'gemini-live'
+      provider: 'gemini',
+      providerMode: 'gemini-live',
+      fallbackFrom: ''
     };
   } catch (err) {
-    errors.push({ provider: generated.provider || 'gemini', code: err.code, message: err.message, status: err.status, details: err.details });
+    errors.push({ provider: 'gemini', code: err.code, message: err.message, status: err.status, details: err.details });
     const shouldTryCloudflare =
       err.code === 'GEMINI_QUOTA_EXCEEDED' ||
       err.code === 'GEMINI_REQUEST_FAILED' ||
@@ -199,9 +199,9 @@ async function generateImageWithProviders({ prompt, photoDataUrl }) {
 
   if (hasCloudflareConfig()) {
     try {
-      const cloudflare = await generateWithCloudflare({ prompt });
+      const cf = await generateWithCloudflare({ prompt });
       return {
-        ...cloudflare,
+        ...cf,
         provider: 'cloudflare',
         providerMode: 'cloudflare-fallback',
         fallbackFrom: 'gemini',
@@ -437,7 +437,7 @@ exports.generatePoster = async (req, res) => {
       savedToDatabase: false,
       fallbackFrom: generated.fallbackFrom || '',
       providerErrors: generated.providerErrors || [],
-      note: generated.provider === 'cloudflare' ? 'A4.11H.3: Gemini failed, Cloudflare Workers AI fallback generated the image.' : 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
+      note: generated.provider === 'cloudflare' ? 'A4.11H.3.1: Gemini failed, Cloudflare Workers AI fallback generated the image.' : 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
     });
   } catch (err) {
     const status =
@@ -458,11 +458,11 @@ exports.generatePoster = async (req, res) => {
       success: false,
       message: err.message || 'Gemini generation failed',
       data: {
-        provider: generated.provider || 'gemini',
-        providerMode: generated.providerMode || 'live-simple',
+        provider: 'multi-provider',
+        providerMode: 'gemini-cloudflare-fallback',
         model: err.model || getGeminiModel(),
         cloudflareModel: getCloudflareConfig().model,
-        code: err.code || 'GEMINI_GENERATION_FAILED',
+        code: err.code || 'IMAGE_GENERATION_FAILED',
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
