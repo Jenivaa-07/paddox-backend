@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Gemini Quota Clarity + Clean Request Fix
-   Phase A4.11H.4.2
+   PADDOX — AI Fan Studio Puter Frontend Provider Test
+   Phase A4.11J
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -44,7 +44,10 @@ function getGeminiApiKey() {
 function getGeminiModelCandidates() {
   const configured = String(process.env.GEMINI_IMAGE_MODEL || '').trim();
   return [
-    configured || 'gemini-2.5-flash-image'
+    configured,
+    'gemini-2.5-flash-image',
+    'gemini-2.5-flash-image-preview',
+    'gemini-2.0-flash-preview-image-generation'
   ].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
 }
 
@@ -83,14 +86,9 @@ async function generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio }
       fallbackFrom: ''
     };
   } catch (err) {
-    const quota = err.code === 'GEMINI_QUOTA_EXCEEDED';
-    const clean = new Error(
-      quota
-        ? 'Gemini image quota is exhausted or billing is not enabled for this Google project. Your credits were not deducted.'
-        : 'Gemini image generation is temporarily unavailable. Your credits were not deducted.'
-    );
+    const clean = new Error('Gemini image generation is temporarily unavailable. Your credits were not deducted.');
     clean.code = err.code || 'GEMINI_GENERATION_UNAVAILABLE';
-    clean.status = quota ? 429 : (err.status || 503);
+    clean.status = err.status || 503;
     clean.details = err.details || err.message || '';
     clean.model = err.model || getGeminiModel();
     clean.originalMessage = err.message || '';
@@ -122,6 +120,87 @@ function aspectToSize(aspect = '') {
   if (a.includes('16:9')) return { width: 1792, height: 1024 };
   if (a.includes('21:9')) return { width: 1792, height: 768 };
   return { width: 1024, height: 1280 };
+}
+
+function isExternalFrontendGeneration(body = {}) {
+  return Boolean(body.generatedImageDataUrl || body.externalProvider === 'puter' || body.externalProviderMode === 'puter-frontend');
+}
+
+async function finalizeExternalPosterGeneration({ user, body, cost, before }) {
+  const payload = body.payload || {};
+  const imageDataUrl = safePhotoDataUri(body.generatedImageDataUrl || body.imageDataUrl || body?.image?.dataUri || body?.image?.url || '');
+  if (!imageDataUrl) {
+    const err = new Error('No generated Puter image was received by the backend.');
+    err.status = 400;
+    err.code = 'PUTER_IMAGE_MISSING';
+    throw err;
+  }
+
+  user.aiCredits = Math.max(0, before - cost);
+  await user.save({ validateBeforeSave:false });
+
+  const outputLabel = payload.output?.aspectLabel || body.aspectRatio || payload.output?.aspectRatio || 'Portrait Poster';
+  const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
+
+  let posterDoc = null;
+  try {
+    posterDoc = await AiPoster.create({
+      user: user._id,
+      fanName: cleanText(payload.fan?.name || payload.fanName || body.fanName || 'PADDOX FAN', 60),
+      style: cleanText(payload.template?.title || body.templateTitle || 'Puter AI Poster', 80),
+      tone: cleanText(payload.template?.realism || body.realism || '', 200),
+      driverInspiration: cleanText(payload.driver?.name || body.driverName || '', 80),
+      teamMood: cleanText(payload.driver?.teamTheme || payload.driver?.team || body.teamName || 'PADDOX Red', 80),
+      outputFormat: cleanText(outputLabel, 40),
+      creativePrompt: cleanText(payload.fan?.tagline || payload.tagline || body.tagline || '', 500),
+      promptUsed: cleanText(body.prompt || payload.prompt || '', 1500),
+      provider: cleanText(body.externalProvider || 'puter', 40),
+      providerMode: cleanText(body.externalProviderMode || 'puter-frontend', 60),
+      cost,
+      creditsBefore: before,
+      creditsAfter: normalizeAiCredits(user.aiCredits),
+      image: {
+        url: imageDataUrl,
+        publicId: '',
+        cloudinarySaved: false,
+        width: outputSize.width,
+        height: outputSize.height
+      },
+      status: 'generated',
+      meta: {
+        source: 'frontend-provider-test',
+        puterProvider: body.puterProvider || '',
+        puterModel: body.puterModel || '',
+        puterRequestLabel: body.puterRequestLabel || '',
+        aspectRatio: body.aspectRatio || payload.output?.aspectRatio || '4:5'
+      }
+    });
+  } catch (dbErr) {
+    console.warn('AI Studio external poster save warning:', dbErr.message);
+  }
+
+  return {
+    image: {
+      url: imageDataUrl,
+      dataUri: imageDataUrl,
+      width: outputSize.width,
+      height: outputSize.height,
+      cloudinarySaved: false
+    },
+    aiCredits: normalizeAiCredits(user.aiCredits),
+    cost,
+    creditsBefore: before,
+    creditsAfter: normalizeAiCredits(user.aiCredits),
+    provider: cleanText(body.externalProvider || 'puter', 40) || 'puter',
+    providerMode: cleanText(body.externalProviderMode || 'puter-frontend', 60) || 'puter-frontend',
+    model: cleanText(body.puterModel || 'gpt-image-1-mini', 80),
+    providerText: 'Image created in PADDOX AI Studio through Puter.js frontend provider flow.',
+    savedToDatabase: Boolean(posterDoc),
+    posterId: posterDoc?._id || null,
+    fallbackFrom: '',
+    providerErrors: [],
+    note: 'A4.11J: Puter.js frontend provider test mode. PADDOX Credits were deducted only after a successful Puter image was returned.'
+  };
 }
 
 function buildPromptFromRequest(body = {}) {
@@ -192,7 +271,6 @@ async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectR
   const parts = [{ text: prompt }];
   const photo = safePhotoDataUri(photoDataUrl);
   const imagePart = splitDataUri(photo);
-
   if (imagePart) {
     parts.push({
       inline_data: {
@@ -202,43 +280,81 @@ async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectR
     });
   }
 
-  /*
-    A4.11H.4.2
-    The live error proved v1 + responseFormat and v1 + responseModalities are rejected for this endpoint,
-    while v1beta + responseModalities is accepted and reaches Gemini quota checks.
-    So we use the clean accepted request shape only. This avoids misleading 400 attempts and makes
-    the real blocker clear: free-tier quota/billing/model access.
-  */
-  const apiVersion = String(process.env.GEMINI_API_VERSION || 'v1beta').trim() || 'v1beta';
-  const body = {
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE']
+  const apiVersions = String(process.env.GEMINI_API_VERSION || '')
+    ? [String(process.env.GEMINI_API_VERSION).trim()]
+    : ['v1', 'v1beta'];
+
+  const aspect = getGeminiAspectRatio(aspectRatio);
+  const bodies = [
+    {
+      label: 'stable-response-format',
+      body: {
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          responseFormat: {
+            image: { aspectRatio: aspect }
+          }
+        }
+      }
+    },
+    {
+      label: 'legacy-response-modalities',
+      body: {
+        contents: [{ role: 'user', parts }],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE']
+        }
+      }
     }
-  };
+  ];
 
-  const response = await postGeminiRequest({ apiVersion, model, apiKey, body });
+  const attempts = [];
 
-  if (response.status >= 200 && response.status < 300) {
-    return { ...readGeminiImageResponse(response, model), apiVersion, requestMode: 'v1beta-response-modalities' };
+  for (const apiVersion of apiVersions) {
+    for (const item of bodies) {
+      const response = await postGeminiRequest({ apiVersion, model, apiKey, body: item.body });
+
+      if (response.status >= 200 && response.status < 300) {
+        try {
+          const parsed = readGeminiImageResponse(response, model);
+          return { ...parsed, apiVersion, requestMode: item.label };
+        } catch (err) {
+          attempts.push({
+            apiVersion,
+            model,
+            requestMode: item.label,
+            code: err.code,
+            status: response.status,
+            message: err.message,
+            detail: sanitizeGeminiDetail(err.details || response.data)
+          });
+        }
+      } else {
+        const detail = response.data?.error || response.data || null;
+        const message = response.data?.error?.message || `Gemini request failed with ${response.status}`;
+        const code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
+
+        attempts.push({
+          apiVersion,
+          model,
+          requestMode: item.label,
+          code,
+          status: response.status,
+          message,
+          detail: sanitizeGeminiDetail(detail)
+        });
+
+        /* Quota errors will not be fixed by changing request shape for the same key. */
+        if (code === 'GEMINI_QUOTA_EXCEEDED') break;
+      }
+    }
   }
 
-  const detail = response.data?.error || response.data || null;
-  const message = response.data?.error?.message || `Gemini request failed with ${response.status}`;
-  const code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
-
-  const err = new Error(message);
-  err.status = response.status;
-  err.details = [{
-    apiVersion,
-    model,
-    requestMode: 'v1beta-response-modalities',
-    code,
-    status: response.status,
-    message,
-    detail: sanitizeGeminiDetail(detail)
-  }];
-  err.code = code;
+  const last = attempts[attempts.length - 1] || {};
+  const err = new Error(last.message || 'Gemini image request failed.');
+  err.status = last.status || 503;
+  err.details = attempts;
+  err.code = attempts.some(a => a.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : (last.code || 'GEMINI_REQUEST_FAILED');
   err.model = model;
   throw err;
 }
@@ -259,28 +375,17 @@ async function generateWithGemini({ prompt, photoDataUrl, aspectRatio }) {
     try {
       return await requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectRatio });
     } catch (err) {
-      const detailList = Array.isArray(err.details)
-        ? err.details
-        : [{ detail: sanitizeGeminiDetail(err.details || err.message) }];
-
+      const detailList = Array.isArray(err.details) ? err.details : [{ detail: sanitizeGeminiDetail(err.details || err.message) }];
       errors.push({ model, code: err.code, message: err.message, status: err.status, attempts: detailList });
 
-      /* If Gemini says quota is exhausted/limit is 0, no code patch can generate with this same key/project. */
-      if (err.code === 'GEMINI_QUOTA_EXCEEDED') break;
-
-      if (err.code !== 'GEMINI_REQUEST_FAILED' && err.code !== 'GEMINI_NO_IMAGE_RETURNED') {
+      if (err.code !== 'GEMINI_QUOTA_EXCEEDED' && err.code !== 'GEMINI_REQUEST_FAILED' && err.code !== 'GEMINI_NO_IMAGE_RETURNED') {
         throw err;
       }
     }
   }
 
-  const hasQuota = errors.some(e => e.code === 'GEMINI_QUOTA_EXCEEDED');
-  const final = new Error(
-    hasQuota
-      ? 'Gemini image quota is exhausted or billing is not enabled for this Google project. No PADDOX Credits were used.'
-      : 'Gemini image generation is unavailable for this API key/model right now. No PADDOX Credits were used.'
-  );
-  final.code = hasQuota ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
+  const final = new Error('Gemini image generation is unavailable for this API key/model right now. No PADDOX Credits were used.');
+  final.code = errors.some(e => e.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
   final.details = errors;
   final.model = models[0] || getGeminiModel();
   throw final;
@@ -307,9 +412,9 @@ exports.getCredits = async (req, res) => {
   }
 };
 
-/* Phase A4.11I.1:
-   Pollinations and Cloudflare removed to protect PADDOX premium quality.
-   Gemini-only safe mode remains: credits deduct only after success. */
+/* Phase A4.11H — Option 1 Simple:
+   Generate image using Gemini only and show it in AI Studio.
+   Cloudflare fallback removed to protect PADDOX premium output quality. */
 exports.generatePoster = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -328,10 +433,14 @@ exports.generatePoster = async (req, res) => {
       });
     }
 
+    if (isExternalFrontendGeneration(body)) {
+      const finalized = await finalizeExternalPosterGeneration({ user, body, cost, before });
+      return successResponse(res, 201, 'Puter image finalized successfully.', finalized);
+    }
+
     const prompt = buildPromptFromRequest(body);
     const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
-
-    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || "" });
+    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '' });
 
     user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
@@ -359,11 +468,9 @@ exports.generatePoster = async (req, res) => {
       savedToDatabase: false,
       fallbackFrom: '',
       providerErrors: [],
-      note: 'A4.11H.4.2: Gemini-only production mode using the accepted v1beta image request shape. No fallback image is shown if Gemini quota/billing fails.'
+      note: 'A4.11H.4.1: Gemini-only compatibility mode using stable REST image config first. No fallback image is shown if Gemini fails.'
     });
   } catch (err) {
-    const status = err.code === 'GEMINI_QUOTA_EXCEEDED' ? 429 : 503;
-
     let currentCredits = null;
     try {
       if (req.user?._id) {
@@ -372,10 +479,28 @@ exports.generatePoster = async (req, res) => {
       }
     } catch {}
 
-    console.error('AI Studio Gemini generation failed:', err.details || err);
+    if (err.code === 'PUTER_IMAGE_MISSING') {
+      return res.status(err.status || 400).json({
+        success: false,
+        message: 'Puter did not return a usable image. Your credits were not deducted.',
+        data: {
+          provider: 'puter',
+          providerMode: 'puter-frontend',
+          code: err.code,
+          aiCredits: currentCredits,
+          creditsUsed: 0,
+          creditDeducted: false,
+          providerErrors: [],
+          retryAdvice: 'Try the Puter generation again. PADDOX Credits remain safe.'
+        }
+      });
+    }
+
+    const status = 503;
+    console.error('AI Studio generation failed:', err.details || err);
     return res.status(status).json({
       success: false,
-      message: err.message || 'Gemini image generation is temporarily unavailable. Your credits were not deducted.',
+      message: 'Gemini image generation is temporarily unavailable. Your credits were not deducted.',
       data: {
         provider: 'gemini',
         providerMode: 'gemini-only',
@@ -386,7 +511,7 @@ exports.generatePoster = async (req, res) => {
         creditDeducted: false,
         providerErrors: Array.isArray(err.details) ? err.details : [],
         geminiOriginalMessage: err.originalMessage || '',
-        retryAdvice: err.code === 'GEMINI_QUOTA_EXCEEDED' ? 'Enable billing/quota for this Google AI project or use a different Gemini project/key with image quota. PADDOX Credits remain safe.' : 'Check providerErrors in the response or Render logs. PADDOX Credits remain safe.'
+        retryAdvice: 'Check providerErrors in the response or Render logs. PADDOX Credits remain safe.'
       }
     });
   }
