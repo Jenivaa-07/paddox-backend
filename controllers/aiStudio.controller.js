@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Puter Frontend Provider Test
-   Phase A4.11J.1
+   PADDOX — AI Fan Studio Colab Hugging Face Free API Bridge
+   Phase A4.11L
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -122,85 +122,119 @@ function aspectToSize(aspect = '') {
   return { width: 1024, height: 1280 };
 }
 
-function isExternalFrontendGeneration(body = {}) {
-  return Boolean(body.generatedImageDataUrl || body.externalProvider === 'puter' || body.externalProviderMode === 'puter-frontend');
+function getColabAiBaseUrl() {
+  return String(process.env.COLAB_AI_API_URL || process.env.AI_STUDIO_COLAB_URL || '').trim().replace(/\/$/, '');
 }
 
-async function finalizeExternalPosterGeneration({ user, body, cost, before }) {
-  const payload = body.payload || {};
-  const imageDataUrl = safePhotoDataUri(body.generatedImageDataUrl || body.imageDataUrl || body?.image?.dataUri || body?.image?.url || '');
-  if (!imageDataUrl) {
-    const err = new Error('No generated Puter image was received by the backend.');
-    err.status = 400;
-    err.code = 'PUTER_IMAGE_MISSING';
-    throw err;
+function getColabAiApiKey() {
+  return String(process.env.COLAB_AI_API_KEY || '').trim();
+}
+
+function getColabAiModel() {
+  return String(process.env.COLAB_AI_MODEL || 'black-forest-labs/FLUX.1-schnell').trim();
+}
+
+function normalizeExternalImageData(payload = {}) {
+  const candidates = [
+    payload?.image,
+    payload?.image_url,
+    payload?.imageUrl,
+    payload?.dataUri,
+    payload?.data_uri,
+    payload?.image_data,
+    payload?.imageData,
+    payload?.generated_image,
+    payload?.output?.image,
+    payload?.output?.image_url,
+    payload?.output?.imageUrl,
+    payload?.output?.dataUri,
+    payload?.output?.data_uri,
+    payload?.result?.image,
+    payload?.result?.image_url,
+    payload?.result?.imageUrl,
+    payload?.result?.dataUri,
+    payload?.result?.data_uri
+  ].filter(Boolean);
+
+  for (const item of candidates) {
+    const text = String(item || '').trim();
+    if (!text) continue;
+    if (/^data:image\//i.test(text)) return text;
+    if (/^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 1000 && !/^https?:\/\//i.test(text)) {
+      return `data:image/png;base64,${text.replace(/[\r\n]/g, '')}`;
+    }
+    if (/^https?:\/\//i.test(text)) return text;
+  }
+  return '';
+}
+
+async function generateWithColabBridge({ prompt, photoDataUrl, aspectRatio, payload = {} }) {
+  const baseUrl = getColabAiBaseUrl();
+  if (!baseUrl) {
+    const error = new Error('COLAB_AI_API_URL is missing. Add your Colab/ngrok API URL in Render environment variables.');
+    error.code = 'COLAB_URL_MISSING';
+    error.status = 500;
+    throw error;
   }
 
-  user.aiCredits = Math.max(0, before - cost);
-  await user.save({ validateBeforeSave:false });
+  const size = aspectToSize(aspectRatio || payload?.output?.aspectRatio || '');
+  const endpoint = /\/generate$/i.test(baseUrl) ? baseUrl : `${baseUrl}/generate`;
+  const apiKey = getColabAiApiKey();
 
-  const outputLabel = payload.output?.aspectLabel || body.aspectRatio || payload.output?.aspectRatio || 'Portrait Poster';
-  const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
+  const requestBody = {
+    prompt,
+    model: getColabAiModel(),
+    aspect_ratio: String(aspectRatio || payload?.output?.aspectRatio || '4:5'),
+    width: size.width,
+    height: size.height,
+    photo_data_url: safePhotoDataUri(photoDataUrl || payload?.references?.fanPhoto?.dataUrl || ''),
+    template: payload?.template?.title || '',
+    driver_name: payload?.driver?.name || '',
+    team_name: payload?.driver?.team || '',
+    fan_name: payload?.fan?.name || '',
+    meta: {
+      provider: 'colab-hf-bridge',
+      promptVersion: payload?.promptVersion || '',
+      requiresUserPhoto: Boolean(payload?.template?.requiresUserPhoto)
+    }
+  };
 
-  let posterDoc = null;
-  try {
-    posterDoc = await AiPoster.create({
-      user: user._id,
-      fanName: cleanText(payload.fan?.name || payload.fanName || body.fanName || 'PADDOX FAN', 60),
-      style: cleanText(payload.template?.title || body.templateTitle || 'Puter AI Poster', 80),
-      tone: cleanText(payload.template?.realism || body.realism || '', 200),
-      driverInspiration: cleanText(payload.driver?.name || body.driverName || '', 80),
-      teamMood: cleanText(payload.driver?.teamTheme || payload.driver?.team || body.teamName || 'PADDOX Red', 80),
-      outputFormat: cleanText(outputLabel, 40),
-      creativePrompt: cleanText(payload.fan?.tagline || payload.tagline || body.tagline || '', 500),
-      promptUsed: cleanText(body.prompt || payload.prompt || '', 1500),
-      provider: cleanText(body.externalProvider || 'puter', 40),
-      providerMode: cleanText(body.externalProviderMode || 'puter-photo-reference', 60),
-      cost,
-      creditsBefore: before,
-      creditsAfter: normalizeAiCredits(user.aiCredits),
-      image: {
-        url: imageDataUrl,
-        publicId: '',
-        cloudinarySaved: false,
-        width: outputSize.width,
-        height: outputSize.height
-      },
-      status: 'generated',
-      meta: {
-        source: 'frontend-provider-test',
-        puterProvider: body.puterProvider || '',
-        puterModel: body.puterModel || '',
-        puterRequestLabel: body.puterRequestLabel || '',
-        puterIdentitySafe: Boolean(body.puterIdentitySafe),
-        aspectRatio: body.aspectRatio || payload.output?.aspectRatio || '4:5'
-      }
-    });
-  } catch (dbErr) {
-    console.warn('AI Studio external poster save warning:', dbErr.message);
+  const response = await axios.post(endpoint, requestBody, {
+    timeout: Number(process.env.COLAB_AI_TIMEOUT_MS || 180000),
+    validateStatus: () => true,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+    }
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    const detail = response.data?.message || response.data?.error || response.data || `HTTP ${response.status}`;
+    const error = new Error('Colab AI generation failed.');
+    error.code = response.status === 401 || response.status === 403 ? 'COLAB_AUTH_FAILED' : 'COLAB_GENERATION_FAILED';
+    error.status = response.status || 503;
+    error.model = getColabAiModel();
+    error.details = sanitizeGeminiDetail(detail);
+    throw error;
+  }
+
+  const image = normalizeExternalImageData(response.data || {});
+  if (!image) {
+    const error = new Error('Colab AI API returned success but no usable image was found.');
+    error.code = 'COLAB_NO_IMAGE_RETURNED';
+    error.status = 502;
+    error.model = getColabAiModel();
+    error.details = sanitizeGeminiDetail(response.data || {});
+    throw error;
   }
 
   return {
-    image: {
-      url: imageDataUrl,
-      dataUri: imageDataUrl,
-      width: outputSize.width,
-      height: outputSize.height,
-      cloudinarySaved: false
-    },
-    aiCredits: normalizeAiCredits(user.aiCredits),
-    cost,
-    creditsBefore: before,
-    creditsAfter: normalizeAiCredits(user.aiCredits),
-    provider: cleanText(body.externalProvider || 'puter', 40) || 'puter',
-    providerMode: cleanText(body.externalProviderMode || 'puter-photo-reference', 60) || 'puter-photo-reference',
-    model: cleanText(body.puterModel || 'gpt-image-1-mini', 80),
-    providerText: 'Image created in PADDOX AI Studio through Puter.js frontend provider flow.',
-    savedToDatabase: Boolean(posterDoc),
-    posterId: posterDoc?._id || null,
-    fallbackFrom: '',
-    providerErrors: [],
-    note: 'A4.11J.1: Puter.js photo-reference strict mode. PADDOX Credits were deducted only after a successful Puter photo-reference image was returned.'
+    dataUri: image,
+    model: String(response.data?.model || response.data?.meta?.model || getColabAiModel()),
+    provider: 'colab-hf-bridge',
+    providerMode: 'colab-hf-free-api',
+    text: String(response.data?.message || 'Image created through PADDOX Colab Hugging Face bridge.'),
+    meta: response.data?.meta || {}
   };
 }
 
@@ -434,21 +468,21 @@ exports.generatePoster = async (req, res) => {
       });
     }
 
-    if (isExternalFrontendGeneration(body)) {
-      const finalized = await finalizeExternalPosterGeneration({ user, body, cost, before });
-      return successResponse(res, 201, 'Puter image finalized successfully.', finalized);
-    }
-
     const prompt = buildPromptFromRequest(body);
     const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
-    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '' });
+    const generated = await generateWithColabBridge({
+      prompt,
+      photoDataUrl,
+      aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '',
+      payload
+    });
 
     user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
 
     const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
 
-    return successResponse(res, 201, 'Gemini image generated successfully.', {
+    return successResponse(res, 201, 'Colab AI image generated successfully.', {
       image: {
         url: generated.dataUri,
         dataUri: generated.dataUri,
@@ -460,16 +494,15 @@ exports.generatePoster = async (req, res) => {
       cost,
       creditsBefore: before,
       creditsAfter: user.aiCredits,
-      provider: generated.provider || 'gemini',
-      providerMode: generated.providerMode || 'gemini-live',
+      provider: generated.provider || 'colab-hf-bridge',
+      providerMode: generated.providerMode || 'colab-hf-free-api',
       model: generated.model,
-      apiVersion: generated.apiVersion || '',
-      requestMode: generated.requestMode || '',
       providerText: generated.text,
       savedToDatabase: false,
       fallbackFrom: '',
       providerErrors: [],
-      note: 'A4.11H.4.1: Gemini-only compatibility mode using stable REST image config first. No fallback image is shown if Gemini fails.'
+      bridgeMeta: generated.meta || {},
+      note: 'A4.11L: PADDOX Colab Hugging Face free API bridge. PADDOX Credits deduct only after successful external Colab generation.'
     });
   } catch (err) {
     let currentCredits = null;
@@ -480,39 +513,23 @@ exports.generatePoster = async (req, res) => {
       }
     } catch {}
 
-    if (err.code === 'PUTER_IMAGE_MISSING') {
-      return res.status(err.status || 400).json({
-        success: false,
-        message: 'Puter did not return a usable image. Your credits were not deducted.',
-        data: {
-          provider: 'puter',
-          providerMode: 'puter-frontend',
-          code: err.code,
-          aiCredits: currentCredits,
-          creditsUsed: 0,
-          creditDeducted: false,
-          providerErrors: [],
-          retryAdvice: 'Try the Puter generation again. PADDOX Credits remain safe.'
-        }
-      });
-    }
-
-    const status = 503;
-    console.error('AI Studio generation failed:', err.details || err);
-    return res.status(status).json({
+    console.error('AI Studio Colab bridge generation failed:', err.details || err);
+    return res.status(err.status || 503).json({
       success: false,
-      message: 'Gemini image generation is temporarily unavailable. Your credits were not deducted.',
+      message: err.code === 'COLAB_URL_MISSING'
+        ? 'Colab AI bridge is not configured yet. Your credits were not deducted.'
+        : 'Colab AI generation is temporarily unavailable. Your credits were not deducted.',
       data: {
-        provider: 'gemini',
-        providerMode: 'gemini-only',
-        model: err.model || getGeminiModel(),
-        code: err.code || 'GEMINI_GENERATION_UNAVAILABLE',
+        provider: 'colab-hf-bridge',
+        providerMode: 'colab-hf-free-api',
+        model: err.model || getColabAiModel(),
+        code: err.code || 'COLAB_GENERATION_UNAVAILABLE',
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
-        providerErrors: Array.isArray(err.details) ? err.details : [],
-        geminiOriginalMessage: err.originalMessage || '',
-        retryAdvice: 'Check providerErrors in the response or Render logs. PADDOX Credits remain safe.'
+        providerErrors: err.details ? [{ message: String(err.details) }] : [],
+        bridgeOriginalMessage: err.message || '',
+        retryAdvice: 'Check COLAB_AI_API_URL and your Colab/ngrok notebook server. PADDOX Credits remain safe.'
       }
     });
   }
