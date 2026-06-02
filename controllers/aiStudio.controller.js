@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Gemini Only Compatibility Fix
-   Phase A4.11H.4.1
+   PADDOX — AI Fan Studio Pollinations Free Provider Integration
+   Phase A4.11I
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -33,86 +33,6 @@ function safeCost(value, fallback = 30) {
   return Math.min(100, Math.max(1, Math.round(n)));
 }
 
-function getGeminiModel() {
-  return String(process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image').trim();
-}
-
-function getGeminiApiKey() {
-  return String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
-}
-
-function getGeminiModelCandidates() {
-  const configured = String(process.env.GEMINI_IMAGE_MODEL || '').trim();
-  return [
-    configured,
-    'gemini-2.5-flash-image',
-    'gemini-2.5-flash-image-preview',
-    'gemini-2.0-flash-preview-image-generation'
-  ].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
-}
-
-function getGeminiAspectRatio(aspect = '') {
-  const a = String(aspect || '').toLowerCase();
-  if (a.includes('1:1')) return '1:1';
-  if (a.includes('9:16')) return '9:16';
-  if (a.includes('16:9')) return '16:9';
-  if (a.includes('21:9')) return '21:9';
-  return '4:5';
-}
-
-function sanitizeGeminiDetail(value) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
-  return text
-    .replace(/AIza[0-9A-Za-z_\-]{20,}/g, '[REDACTED_GEMINI_KEY]')
-    .slice(0, 1800);
-}
-
-function isGeminiQuotaError(status, payload = {}) {
-  const text = JSON.stringify(payload || {}).toLowerCase();
-  return status === 429 ||
-    text.includes('quota') ||
-    text.includes('resource_exhausted') ||
-    text.includes('generate_content_free_tier') ||
-    text.includes('free tier');
-}
-
-async function generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio }) {
-  try {
-    const gemini = await generateWithGemini({ prompt, photoDataUrl, aspectRatio });
-    return {
-      ...gemini,
-      provider: 'gemini',
-      providerMode: 'gemini-live',
-      fallbackFrom: ''
-    };
-  } catch (err) {
-    const clean = new Error('Gemini image generation is temporarily unavailable. Your credits were not deducted.');
-    clean.code = err.code || 'GEMINI_GENERATION_UNAVAILABLE';
-    clean.status = err.status || 503;
-    clean.details = err.details || err.message || '';
-    clean.model = err.model || getGeminiModel();
-    clean.originalMessage = err.message || '';
-    throw clean;
-  }
-}
-
-function safePhotoDataUri(value = '') {
-  const text = String(value || '').trim();
-  if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 6000000) {
-    return text.replace(/[\r\n]/g, '');
-  }
-  return '';
-}
-
-function splitDataUri(dataUri = '') {
-  const match = String(dataUri || '').match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i);
-  if (!match) return null;
-  return {
-    mimeType: match[1],
-    data: match[2].replace(/[\r\n]/g, '')
-  };
-}
-
 function aspectToSize(aspect = '') {
   const a = String(aspect || '').toLowerCase();
   if (a.includes('1:1')) return { width: 1024, height: 1024 };
@@ -120,6 +40,140 @@ function aspectToSize(aspect = '') {
   if (a.includes('16:9')) return { width: 1792, height: 1024 };
   if (a.includes('21:9')) return { width: 1792, height: 768 };
   return { width: 1024, height: 1280 };
+}
+
+function getPollinationsModel() {
+  return String(process.env.POLLINATIONS_IMAGE_MODEL || 'flux').trim() || 'flux';
+}
+
+function getPollinationsApiKey() {
+  return String(process.env.POLLINATIONS_API_KEY || process.env.POLLINATIONS_KEY || '').trim();
+}
+
+function getPollinationsEndpoint() {
+  return String(process.env.POLLINATIONS_IMAGE_ENDPOINT || 'https://gen.pollinations.ai/image').replace(/\/+$/, '');
+}
+
+function sanitizeProviderDetail(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  return text
+    .replace(/(key=)[^&\s]+/gi, '$1[REDACTED]')
+    .replace(/(POLLINATIONS[_A-Z]*KEY["'\s:=]+)[^"'\s,}]+/gi, '$1[REDACTED]')
+    .slice(0, 1800);
+}
+
+function simplifyPromptForPollinations(prompt = '', body = {}) {
+  const payload = body.payload || {};
+  const driver = payload.driver || {};
+  const template = payload.template || {};
+  const fan = payload.fan || {};
+  const output = payload.output || {};
+
+  const raw = String(prompt || '')
+    .replace(/PADDOX AI STUDIO REQUEST:/gi, '')
+    .replace(/FAN IDENTITY LOCK[\s\S]*?(?=CURRENT GRID DRIVER IDENTITY|COMPOSITION AND OUTPUT|QUALITY AND REALISM LOCK|$)/gi, '')
+    .replace(/SELFIE NEGATIVE COMPOSITION RULES:/gi, '')
+    .replace(/avoid[^.]{0,220}\./gi, '')
+    .replace(/\r\n/g, '\n');
+
+  const identityHint = fan?.name
+    ? `Create the fan as a realistic motorsport fan named ${fan.name}.`
+    : 'Create a realistic motorsport fan as the main subject.';
+
+  const essentials = [
+    `Premium hyper-realistic Formula racing fan poster for PADDOX.`,
+    `Scene/template: ${template.title || 'Night Pit Lane Selfie'}.`,
+    `Driver inspiration: ${driver.name || 'current grid driver'} from ${driver.team || 'Formula racing team'}.`,
+    driver.faceDescription ? `Driver face description: ${driver.faceDescription}.` : '',
+    driver.racingSuitDescription ? `Race suit: ${driver.racingSuitDescription}.` : '',
+    driver.garageDescription ? `Garage/background: ${driver.garageDescription}.` : '',
+    identityHint,
+    `Output: ${output.aspectLabel || output.aspectRatio || 'portrait 4:5 poster'}.`,
+    `Style: realistic sports photography, cinematic pit lane lighting, sharp face detail, natural skin texture, shallow depth of field, premium black red graphite motorsport mood, no logos, no watermark, no broken text.`,
+    raw
+  ].filter(Boolean).join(' ');
+
+  return cleanText(essentials, Number(process.env.POLLINATIONS_PROMPT_MAX || 1800));
+}
+
+function isPollinationsRetryable(status, payload = '') {
+  const text = String(typeof payload === 'string' ? payload : JSON.stringify(payload || {})).toLowerCase();
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500 ||
+    text.includes('timeout') || text.includes('busy') || text.includes('rate') || text.includes('limit');
+}
+
+async function generateWithPollinations({ prompt, body, aspectRatio }) {
+  const size = aspectToSize(aspectRatio);
+  const model = getPollinationsModel();
+  const apiKey = getPollinationsApiKey();
+  const endpoint = getPollinationsEndpoint();
+  const pollPrompt = simplifyPromptForPollinations(prompt, body);
+  const seed = String(Date.now()).slice(-9);
+
+  const params = new URLSearchParams({
+    model,
+    width: String(size.width),
+    height: String(size.height),
+    seed,
+    enhance: String(process.env.POLLINATIONS_ENHANCE || 'false'),
+    nologo: 'true',
+    private: 'true',
+    safe: String(process.env.POLLINATIONS_SAFE || 'false')
+  });
+
+  if (apiKey) params.set('key', apiKey);
+  if (process.env.POLLINATIONS_REFERRER) params.set('referrer', String(process.env.POLLINATIONS_REFERRER));
+
+  const url = `${endpoint}/${encodeURIComponent(pollPrompt)}?${params.toString()}`;
+
+  const response = await axios.get(url, {
+    timeout: Number(process.env.POLLINATIONS_TIMEOUT_MS || 120000),
+    responseType: 'arraybuffer',
+    headers: {
+      Accept: 'image/*,application/json,text/plain,*/*',
+      'User-Agent': 'PADDOX-AI-Studio/1.0'
+    },
+    validateStatus: () => true
+  });
+
+  const contentType = String(response.headers?.['content-type'] || '').toLowerCase();
+
+  if (response.status < 200 || response.status >= 300) {
+    let detail = '';
+    try { detail = Buffer.from(response.data || '').toString('utf8'); } catch {}
+    const err = new Error(detail || `Pollinations request failed with ${response.status}`);
+    err.status = response.status;
+    err.code = isPollinationsRetryable(response.status, detail) ? 'POLLINATIONS_TEMPORARILY_UNAVAILABLE' : 'POLLINATIONS_REQUEST_FAILED';
+    err.details = [{ model, status: response.status, message: sanitizeProviderDetail(detail), endpoint: endpoint.replace(/^https?:\/\//, '') }];
+    err.model = model;
+    throw err;
+  }
+
+  if (!contentType.includes('image')) {
+    const text = Buffer.from(response.data || '').toString('utf8');
+    const err = new Error(text || 'Pollinations did not return an image.');
+    err.status = response.status;
+    err.code = 'POLLINATIONS_NO_IMAGE_RETURNED';
+    err.details = [{ model, status: response.status, message: sanitizeProviderDetail(text) }];
+    err.model = model;
+    throw err;
+  }
+
+  const mime = contentType.split(';')[0] || 'image/png';
+  const base64 = Buffer.from(response.data).toString('base64');
+
+  return {
+    dataUri: `data:${mime};base64,${base64}`,
+    text: 'Pollinations free provider image generated. Fan upload is not used as an image reference in free URL mode; it is used only for local prompt context.',
+    model,
+    provider: 'pollinations',
+    providerMode: 'pollinations-free',
+    promptUsed: pollPrompt,
+    width: size.width,
+    height: size.height,
+    seed,
+    endpoint: endpoint.replace(/^https?:\/\//, '')
+  };
 }
 
 function buildPromptFromRequest(body = {}) {
@@ -139,175 +193,10 @@ function buildPromptFromRequest(body = {}) {
     `Team: ${team}.`,
     `Output format: ${output}.`,
     '',
-    'Create a photorealistic, hyper-realistic premium motorsport fan image using the uploaded fan photo as reference when provided.',
+    'Create a photorealistic, hyper-realistic premium motorsport fan image.',
     'Keep realistic skin texture, believable lens behavior, motorsport editorial lighting, and clean professional composition.',
     'Avoid cartoon, anime, illustration, plastic skin, distorted fingers, extra limbs, duplicate faces, wrong team colors, messy sponsor text, and blurry identity.'
   ].join('\n');
-}
-
-async function postGeminiRequest({ apiVersion, model, apiKey, body }) {
-  const endpoint = `https://generativelanguage.googleapis.com/${apiVersion}/models/${encodeURIComponent(model)}:generateContent`;
-
-  return axios.post(endpoint, body, {
-    timeout: Number(process.env.GEMINI_TIMEOUT_MS || 90000),
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': apiKey
-    },
-    validateStatus: () => true
-  });
-}
-
-function readGeminiImageResponse(response, model) {
-  const candidates = response.data?.candidates || [];
-  let text = '';
-
-  for (const candidate of candidates) {
-    const candidateParts = candidate?.content?.parts || [];
-    text += candidateParts.map(p => p.text).filter(Boolean).join('\n');
-
-    for (const part of candidateParts) {
-      const inline = part.inlineData || part.inline_data;
-      const mimeType = inline?.mimeType || inline?.mime_type || 'image/png';
-      if (inline?.data) {
-        return {
-          dataUri: `data:${mimeType};base64,${String(inline.data).replace(/[\r\n]/g, '')}`,
-          text: text.trim().slice(0, 1200),
-          model
-        };
-      }
-    }
-  }
-
-  const noImage = new Error(text.trim() || 'Gemini returned text only, not an image.');
-  noImage.code = 'GEMINI_NO_IMAGE_RETURNED';
-  noImage.model = model;
-  noImage.details = response.data || null;
-  throw noImage;
-}
-
-async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectRatio }) {
-  const parts = [{ text: prompt }];
-  const photo = safePhotoDataUri(photoDataUrl);
-  const imagePart = splitDataUri(photo);
-  if (imagePart) {
-    parts.push({
-      inline_data: {
-        mime_type: imagePart.mimeType,
-        data: imagePart.data
-      }
-    });
-  }
-
-  const apiVersions = String(process.env.GEMINI_API_VERSION || '')
-    ? [String(process.env.GEMINI_API_VERSION).trim()]
-    : ['v1', 'v1beta'];
-
-  const aspect = getGeminiAspectRatio(aspectRatio);
-  const bodies = [
-    {
-      label: 'stable-response-format',
-      body: {
-        contents: [{ role: 'user', parts }],
-        generationConfig: {
-          responseFormat: {
-            image: { aspectRatio: aspect }
-          }
-        }
-      }
-    },
-    {
-      label: 'legacy-response-modalities',
-      body: {
-        contents: [{ role: 'user', parts }],
-        generationConfig: {
-          responseModalities: ['TEXT', 'IMAGE']
-        }
-      }
-    }
-  ];
-
-  const attempts = [];
-
-  for (const apiVersion of apiVersions) {
-    for (const item of bodies) {
-      const response = await postGeminiRequest({ apiVersion, model, apiKey, body: item.body });
-
-      if (response.status >= 200 && response.status < 300) {
-        try {
-          const parsed = readGeminiImageResponse(response, model);
-          return { ...parsed, apiVersion, requestMode: item.label };
-        } catch (err) {
-          attempts.push({
-            apiVersion,
-            model,
-            requestMode: item.label,
-            code: err.code,
-            status: response.status,
-            message: err.message,
-            detail: sanitizeGeminiDetail(err.details || response.data)
-          });
-        }
-      } else {
-        const detail = response.data?.error || response.data || null;
-        const message = response.data?.error?.message || `Gemini request failed with ${response.status}`;
-        const code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
-
-        attempts.push({
-          apiVersion,
-          model,
-          requestMode: item.label,
-          code,
-          status: response.status,
-          message,
-          detail: sanitizeGeminiDetail(detail)
-        });
-
-        /* Quota errors will not be fixed by changing request shape for the same key. */
-        if (code === 'GEMINI_QUOTA_EXCEEDED') break;
-      }
-    }
-  }
-
-  const last = attempts[attempts.length - 1] || {};
-  const err = new Error(last.message || 'Gemini image request failed.');
-  err.status = last.status || 503;
-  err.details = attempts;
-  err.code = attempts.some(a => a.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : (last.code || 'GEMINI_REQUEST_FAILED');
-  err.model = model;
-  throw err;
-}
-
-async function generateWithGemini({ prompt, photoDataUrl, aspectRatio }) {
-  const apiKey = getGeminiApiKey();
-
-  if (!apiKey) {
-    const error = new Error('GEMINI_API_KEY is missing. Add it in Render environment variables.');
-    error.code = 'GEMINI_KEY_MISSING';
-    throw error;
-  }
-
-  const models = getGeminiModelCandidates();
-  const errors = [];
-
-  for (const model of models) {
-    try {
-      return await requestGeminiImage({ model, apiKey, prompt, photoDataUrl, aspectRatio });
-    } catch (err) {
-      const detailList = Array.isArray(err.details) ? err.details : [{ detail: sanitizeGeminiDetail(err.details || err.message) }];
-      errors.push({ model, code: err.code, message: err.message, status: err.status, attempts: detailList });
-
-      if (err.code !== 'GEMINI_QUOTA_EXCEEDED' && err.code !== 'GEMINI_REQUEST_FAILED' && err.code !== 'GEMINI_NO_IMAGE_RETURNED') {
-        throw err;
-      }
-    }
-  }
-
-  const final = new Error('Gemini image generation is unavailable for this API key/model right now. No PADDOX Credits were used.');
-  final.code = errors.some(e => e.code === 'GEMINI_QUOTA_EXCEEDED') ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
-  final.details = errors;
-  final.model = models[0] || getGeminiModel();
-  throw final;
 }
 
 /* Phase A4.11H.1 — Real credits sync endpoint for AI Studio frontend. */
@@ -331,9 +220,9 @@ exports.getCredits = async (req, res) => {
   }
 };
 
-/* Phase A4.11H — Option 1 Simple:
-   Generate image using Gemini only and show it in AI Studio.
-   Cloudflare fallback removed to protect PADDOX premium output quality. */
+/* Phase A4.11I:
+   Generate image using Pollinations free provider.
+   Cloudflare removed. Gemini kept out of active generation until quota is available. */
 exports.generatePoster = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -353,41 +242,37 @@ exports.generatePoster = async (req, res) => {
     }
 
     const prompt = buildPromptFromRequest(body);
-    const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
-
-    const generated = await generateImageWithGeminiOnly({ prompt, photoDataUrl, aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || "" });
+    const aspectRatio = payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '';
+    const generated = await generateWithPollinations({ prompt, body, aspectRatio });
 
     user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
 
-    const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
-
-    return successResponse(res, 201, 'Gemini image generated successfully.', {
+    return successResponse(res, 201, 'Pollinations image generated successfully.', {
       image: {
         url: generated.dataUri,
         dataUri: generated.dataUri,
-        width: outputSize.width,
-        height: outputSize.height,
+        width: generated.width,
+        height: generated.height,
         cloudinarySaved: false
       },
       aiCredits: user.aiCredits,
       cost,
       creditsBefore: before,
       creditsAfter: user.aiCredits,
-      provider: generated.provider || 'gemini',
-      providerMode: generated.providerMode || 'gemini-live',
+      provider: 'pollinations',
+      providerMode: 'pollinations-free',
       model: generated.model,
-      apiVersion: generated.apiVersion || '',
-      requestMode: generated.requestMode || '',
+      seed: generated.seed,
+      endpoint: generated.endpoint,
       providerText: generated.text,
+      promptUsed: generated.promptUsed,
       savedToDatabase: false,
       fallbackFrom: '',
       providerErrors: [],
-      note: 'A4.11H.4.1: Gemini-only compatibility mode using stable REST image config first. No fallback image is shown if Gemini fails.'
+      note: 'A4.11I: Pollinations free provider mode. Credits deduct only after a real image response. No Cloudflare fallback.'
     });
   } catch (err) {
-    const status = err.code === 'GEMINI_QUOTA_EXCEEDED' ? 503 : 503;
-
     let currentCredits = null;
     try {
       if (req.user?._id) {
@@ -396,21 +281,20 @@ exports.generatePoster = async (req, res) => {
       }
     } catch {}
 
-    console.error('AI Studio Gemini generation failed:', err.details || err);
-    return res.status(status).json({
+    console.error('AI Studio Pollinations generation failed:', err.details || err);
+    return res.status(err.status && err.status < 500 ? 502 : 503).json({
       success: false,
-      message: 'Gemini image generation is temporarily unavailable. Your credits were not deducted.',
+      message: 'Pollinations image generation is temporarily unavailable. Your credits were not deducted.',
       data: {
-        provider: 'gemini',
-        providerMode: 'gemini-only',
-        model: err.model || getGeminiModel(),
-        code: err.code || 'GEMINI_GENERATION_UNAVAILABLE',
+        provider: 'pollinations',
+        providerMode: 'pollinations-free',
+        model: err.model || getPollinationsModel(),
+        code: err.code || 'POLLINATIONS_GENERATION_UNAVAILABLE',
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
-        providerErrors: Array.isArray(err.details) ? err.details : [],
-        geminiOriginalMessage: err.originalMessage || '',
-        retryAdvice: 'Check providerErrors in the response or Render logs. PADDOX Credits remain safe.'
+        providerErrors: Array.isArray(err.details) ? err.details : [{ message: sanitizeProviderDetail(err.message || '') }],
+        retryAdvice: 'Pollinations free provider may be busy or may require POLLINATIONS_API_KEY depending on your account. PADDOX Credits remain safe.'
       }
     });
   }
