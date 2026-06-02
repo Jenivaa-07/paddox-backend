@@ -41,6 +41,24 @@ function getGeminiApiKey() {
   return String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
 
+function getGeminiModelCandidates() {
+  const configured = String(process.env.GEMINI_IMAGE_MODEL || '').trim();
+  return [
+    configured,
+    'gemini-2.5-flash-image',
+    'gemini-2.0-flash-preview-image-generation'
+  ].filter(Boolean).filter((v, i, arr) => arr.indexOf(v) === i);
+}
+
+function isGeminiQuotaError(status, payload = {}) {
+  const text = JSON.stringify(payload || {}).toLowerCase();
+  return status === 429 ||
+    text.includes('quota') ||
+    text.includes('resource_exhausted') ||
+    text.includes('generate_content_free_tier') ||
+    text.includes('free tier');
+}
+
 function safePhotoDataUri(value = '') {
   const text = String(value || '').trim();
   if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 6000000) {
@@ -90,16 +108,7 @@ function buildPromptFromRequest(body = {}) {
   ].join('\n');
 }
 
-async function generateWithGemini({ prompt, photoDataUrl }) {
-  const apiKey = getGeminiApiKey();
-  const model = getGeminiModel();
-
-  if (!apiKey) {
-    const error = new Error('GEMINI_API_KEY is missing. Add it in Render environment variables.');
-    error.code = 'GEMINI_KEY_MISSING';
-    throw error;
-  }
-
+async function requestGeminiImage({ model, apiKey, prompt, photoDataUrl }) {
   const parts = [{ text: prompt }];
   const photo = safePhotoDataUri(photoDataUrl);
   const imagePart = splitDataUri(photo);
@@ -112,10 +121,13 @@ async function generateWithGemini({ prompt, photoDataUrl }) {
     });
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(model)}:generateContent`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
   const response = await axios.post(endpoint, {
-    contents: [{ parts }]
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      responseModalities: ['TEXT', 'IMAGE']
+    }
   }, {
     timeout: Number(process.env.GEMINI_TIMEOUT_MS || 90000),
     headers: {
@@ -129,7 +141,9 @@ async function generateWithGemini({ prompt, photoDataUrl }) {
     const msg = response.data?.error?.message || `Gemini request failed with ${response.status}`;
     const err = new Error(msg);
     err.status = response.status;
-    err.details = response.data?.error || null;
+    err.details = response.data?.error || response.data || null;
+    err.code = isGeminiQuotaError(response.status, response.data) ? 'GEMINI_QUOTA_EXCEEDED' : 'GEMINI_REQUEST_FAILED';
+    err.model = model;
     throw err;
   }
 
@@ -153,9 +167,42 @@ async function generateWithGemini({ prompt, photoDataUrl }) {
     }
   }
 
-  throw new Error(text.trim() || 'Gemini did not return an image. Try a shorter prompt or another template.');
+  const noImage = new Error(text.trim() || 'Gemini returned text only, not an image.');
+  noImage.code = 'GEMINI_NO_IMAGE_RETURNED';
+  noImage.model = model;
+  throw noImage;
 }
 
+async function generateWithGemini({ prompt, photoDataUrl }) {
+  const apiKey = getGeminiApiKey();
+
+  if (!apiKey) {
+    const error = new Error('GEMINI_API_KEY is missing. Add it in Render environment variables.');
+    error.code = 'GEMINI_KEY_MISSING';
+    throw error;
+  }
+
+  const models = getGeminiModelCandidates();
+  const errors = [];
+
+  for (const model of models) {
+    try {
+      return await requestGeminiImage({ model, apiKey, prompt, photoDataUrl });
+    } catch (err) {
+      errors.push({ model, code: err.code, message: err.message, status: err.status });
+      /* If one model has free-tier quota exhausted, try the next image-capable model once. */
+      if (err.code !== 'GEMINI_QUOTA_EXCEEDED' && err.code !== 'GEMINI_REQUEST_FAILED') {
+        throw err;
+      }
+    }
+  }
+
+  const final = new Error('Gemini free image quota is exhausted or unavailable for this API key. No PADDOX Credits were used.');
+  final.code = 'GEMINI_QUOTA_EXCEEDED';
+  final.details = errors;
+  final.model = models[0] || getGeminiModel();
+  throw final;
+}
 
 /* Phase A4.11H.1 — Real credits sync endpoint for AI Studio frontend. */
 exports.getCredits = async (req, res) => {
@@ -229,7 +276,19 @@ exports.generatePoster = async (req, res) => {
       note: 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
     });
   } catch (err) {
-    const status = err.code === 'GEMINI_KEY_MISSING' ? 503 : 500;
+    const status =
+      err.code === 'GEMINI_KEY_MISSING' ? 503 :
+      err.code === 'GEMINI_QUOTA_EXCEEDED' ? 429 :
+      500;
+
+    let currentCredits = null;
+    try {
+      if (req.user?._id) {
+        const freshUser = await User.findById(req.user._id).select('aiCredits');
+        currentCredits = freshUser ? normalizeAiCredits(freshUser.aiCredits) : null;
+      }
+    } catch {}
+
     console.error('AI Studio Gemini generation failed:', err.details || err);
     return res.status(status).json({
       success: false,
@@ -237,8 +296,14 @@ exports.generatePoster = async (req, res) => {
       data: {
         provider: 'gemini',
         providerMode: 'live-simple',
-        model: getGeminiModel(),
-        code: err.code || 'GEMINI_GENERATION_FAILED'
+        model: err.model || getGeminiModel(),
+        code: err.code || 'GEMINI_GENERATION_FAILED',
+        aiCredits: currentCredits,
+        creditsUsed: 0,
+        creditDeducted: false,
+        retryAdvice: err.code === 'GEMINI_QUOTA_EXCEEDED'
+          ? 'Gemini free image quota is exhausted for this key/model. Wait for quota reset or use another API key/model.'
+          : ''
       }
     });
   }
