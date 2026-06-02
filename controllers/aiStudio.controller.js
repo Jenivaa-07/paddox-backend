@@ -1,25 +1,23 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Generation Foundation
-   Phase A4.11D
+   PADDOX — AI Fan Studio Gemini Free Generation Connect
+   Phase A4.11H
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
-const { cloudinary } = require('../config/cloudinary');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const axios = require('axios');
-
-const STANDARD_AI_POSTER_COST = 15;
 
 function serverError(res, err, label = 'AI Studio server error') {
   console.error(label, err);
   return res.status(500).json({ success:false, message: err.message || label });
 }
 
-function cleanText(value = '', max = 160) {
+function cleanText(value = '', max = 8000) {
   return String(value || '')
     .replace(/[<>]/g, '')
-    .replace(/\s+/g, ' ')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
     .trim()
     .slice(0, max);
 }
@@ -29,429 +27,198 @@ function normalizeAiCredits(value) {
   return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 50;
 }
 
-function escapeSvg(value = '') {
-  return String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+function safeCost(value, fallback = 30) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(100, Math.max(1, Math.round(n)));
 }
 
-
-
-
-/* A4.11C.6 Emergency generation speed fix:
-   Do not fetch external logo URLs during generation. Render was hanging on remote
-   asset fetch / image upload in some deploys. The poster now responds fast and
-   uses PADDOX wordmark branding. A later phase can embed the real logo as a
-   local/base64 asset without network calls. */
-async function getPaddoxBrandIconDataUri() {
-  return '';
+function getGeminiModel() {
+  return String(process.env.GEMINI_IMAGE_MODEL || 'gemini-2.5-flash-image').trim();
 }
 
-function withTimeout(promise, ms = 6500, fallback = null) {
-  return Promise.race([
-    promise,
-    new Promise(resolve => setTimeout(() => resolve(fallback), ms))
-  ]);
-}
-
-function formatToSize(format = '') {
-  const f = String(format || '').toLowerCase();
-  if (f.includes('square')) return { width: 1200, height: 1200, ratio: '1:1' };
-  if (f.includes('wallpaper')) return { width: 1600, height: 900, ratio: '16:9' };
-  return { width: 1080, height: 1350, ratio: '4:5' };
-}
-
-function buildSafePrompt(body = {}) {
-  const style = cleanText(body.style || 'VIP Paddock', 80);
-  const tone = cleanText(body.tone || '', 180);
-  const fanName = cleanText(body.fanName || 'PADDOX FAN', 60);
-  const driver = cleanText(body.driverInspiration || 'favorite motorsport driver inspiration', 80);
-  const teamMood = cleanText(body.teamMood || 'PADDOX Red', 80);
-  const format = cleanText(body.outputFormat || 'Portrait 4:5', 40);
-  const creativePrompt = cleanText(body.creativePrompt || '', 420);
-
-  return [
-    `Create a fictional premium motorsport fan poster for PADDOX.`,
-    `Fan display name: ${fanName}.`,
-    `Style: ${style}.`,
-    tone ? `Visual tone: ${tone}.` : '',
-    `Driver inspiration: ${driver}. Do not imply a real endorsement or real photographed meeting.`,
-    `Team color mood: ${teamMood}.`,
-    `Output format: ${format}.`,
-    creativePrompt ? `Creative direction: ${creativePrompt}.` : '',
-    `Use luxury black graphite, white contrast, red racing accents, speed lines, glass depth, clean branding, cinematic lighting.`,
-    `This is fictional fan artwork only.`
-  ].filter(Boolean).join(' ');
-}
-
-
-function envBool(value = '') {
-  return ['1', 'true', 'yes', 'live', 'on'].includes(String(value || '').toLowerCase().trim());
-}
-
-function getAiStudioMode() {
-  const provider = String(process.env.AI_IMAGE_PROVIDER || 'paddox-preview').toLowerCase().trim();
-  const mode = String(process.env.AI_STUDIO_MODE || 'preview').toLowerCase().trim();
-  const hasKey = !!String(process.env.GEMINI_API_KEY || '').trim();
-  const liveRequested = provider === 'gemini' && mode === 'live' && hasKey;
-  return {
-    provider: liveRequested ? 'gemini' : 'paddox-preview',
-    providerMode: liveRequested ? 'live' : 'preview',
-    liveRequested,
-    model: process.env.GEMINI_IMAGE_MODEL || 'gemini-2.0-flash-preview-image-generation'
-  };
-}
-
-function splitDataUri(dataUri = '') {
-  const match = String(dataUri || '').match(/^data:(image\/(?:png|jpe?g|webp|svg\+xml));base64,(.+)$/i);
-  if (!match) return null;
-  return { mimeType: match[1], data: match[2].replace(/[\r\n]/g, '') };
-}
-
-function buildGeminiPrompt(promptUsed = '', body = {}) {
-  return [
-    promptUsed,
-    '',
-    'IMPORTANT SAFETY AND BRAND RULES:',
-    '- Create a fictional motorsport fan artwork/poster only.',
-    '- Do not show or imply a real meeting with a real driver.',
-    '- Do not create official Formula 1, FIA, team, sponsor, or driver endorsement marks.',
-    '- Avoid exact real driver likeness; use driver/team-inspired mood only.',
-    '- Premium PADDOX visual style: graphite black, red accent, clean race lighting, luxury paddock atmosphere.',
-    '- The final image should be a poster-style visual suitable for sharing.',
-    body.photoDataUrl ? '- Use the uploaded fan photo as loose personal reference, but keep the result fictional and poster-like.' : ''
-  ].filter(Boolean).join('\n');
-}
-
-async function generateWithGemini({ promptUsed, body, outputFormat }) {
-  const { model } = getAiStudioMode();
-  const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
-  if (!apiKey) throw new Error('GEMINI_API_KEY is missing');
-
-  const photo = safePhotoDataUri(body.photoDataUrl || '');
-  const parts = [{ text: buildGeminiPrompt(promptUsed, { ...body, photoDataUrl: photo }) }];
-  const imagePart = splitDataUri(photo);
-  if (imagePart && imagePart.data.length < 1600000) {
-    parts.push({ inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } });
-  }
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const response = await axios.post(url, {
-    contents: [{ role: 'user', parts }],
-    generationConfig: {
-      responseModalities: ['TEXT', 'IMAGE']
-    }
-  }, {
-    timeout: Number(process.env.GEMINI_TIMEOUT_MS || 45000),
-    headers: { 'Content-Type': 'application/json' },
-    validateStatus: () => true
-  });
-
-  if (response.status < 200 || response.status >= 300) {
-    const msg = response.data?.error?.message || `Gemini request failed with ${response.status}`;
-    throw new Error(msg);
-  }
-
-  const candidates = response.data?.candidates || [];
-  for (const candidate of candidates) {
-    const candidateParts = candidate?.content?.parts || [];
-    for (const part of candidateParts) {
-      const inline = part.inlineData || part.inline_data;
-      if (inline?.data && inline?.mimeType) {
-        return {
-          dataUri: `data:${inline.mimeType};base64,${String(inline.data).replace(/[\r\n]/g, '')}`,
-          model,
-          text: candidateParts.map(p => p.text).filter(Boolean).join('\n').slice(0, 500)
-        };
-      }
-    }
-  }
-
-  throw new Error('Gemini did not return an image');
+function getGeminiApiKey() {
+  return String(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
 
 function safePhotoDataUri(value = '') {
   const text = String(value || '').trim();
-  if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 1800000) {
+  if (/^data:image\/(png|jpe?g|webp);base64,[a-z0-9+/=\r\n]+$/i.test(text) && text.length < 6000000) {
     return text.replace(/[\r\n]/g, '');
   }
   return '';
 }
 
-function posterAccentFromTeam(teamMood = '') {
-  const t = String(teamMood || '').toLowerCase();
-  if (t.includes('ferrari')) return { primary:'#e8002d', secondary:'#c9a84c', glow:'#b00022', label:'FERRARI RED' };
-  if (t.includes('red bull')) return { primary:'#244cff', secondary:'#f2c94c', glow:'#0b1740', label:'RACE BLUE' };
-  if (t.includes('mclaren')) return { primary:'#ff8700', secondary:'#00a3e0', glow:'#391700', label:'PAPAYA SPEED' };
-  if (t.includes('mercedes')) return { primary:'#00d2be', secondary:'#c8c8c8', glow:'#003a36', label:'SILVER ENERGY' };
-  if (t.includes('aston')) return { primary:'#006f62', secondary:'#c9a84c', glow:'#002e29', label:'EMERALD GARAGE' };
-  return { primary:'#e8002d', secondary:'#c9a84c', glow:'#51000f', label:'PADDOX RED' };
+function splitDataUri(dataUri = '') {
+  const match = String(dataUri || '').match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: match[1],
+    data: match[2].replace(/[\r\n]/g, '')
+  };
 }
 
-async function buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl }) {
-  const { width, height, ratio } = formatToSize(outputFormat);
-  const isWide = ratio === '16:9';
-  const isSquare = ratio === '1:1';
-  const accent = posterAccentFromTeam(teamMood);
-  const displayName = cleanText(fanName || 'PADDOX FAN', 44).toUpperCase();
-  const driverText = cleanText(driverInspiration || 'Driver-inspired', 52).toUpperCase();
-  const styleText = cleanText(style || 'VIP Paddock', 42).toUpperCase();
-  const teamText = cleanText(teamMood || accent.label, 36).toUpperCase();
-  const promptText = cleanText(creativePrompt || 'Premium fictional motorsport fan artwork created for the PADDOX fan universe.', 160);
-  const photo = safePhotoDataUri(photoDataUrl);
-
-  const margin = isWide ? 54 : 58;
-  const innerW = width - margin * 2;
-  const innerH = height - margin * 2;
-  const logoScale = isWide ? 0.82 : 1;
-  const titleSize = isWide ? 76 : isSquare ? 68 : 82;
-  const heroX = isWide ? width * 0.55 : width * 0.50;
-  const heroY = isWide ? height * 0.50 : height * 0.42;
-  const heroW = isWide ? width * 0.38 : width * 0.56;
-  const heroH = isWide ? height * 0.56 : height * 0.46;
-  const textX = isWide ? 78 : 76;
-  const textY = isWide ? height * 0.42 : height * 0.58;
-  const editionY = isWide ? height * 0.30 : height * 0.50;
-  const footerY = height - 78;
-
-  const escapedName = escapeSvg(displayName);
-  const escapedStyle = escapeSvg(styleText);
-  const escapedDriver = escapeSvg(driverText);
-  const escapedTeam = escapeSvg(teamText);
-  const escapedPrompt = escapeSvg(promptText);
-  const primary = accent.primary;
-  const secondary = accent.secondary;
-  const glow = accent.glow;
-
-  const photoLayer = photo ? `
-    <g clip-path="url(#heroClip)">
-      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="#121212"/>
-      <image href="${photo}" x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" preserveAspectRatio="xMidYMid slice" opacity=".72"/>
-      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="url(#heroShade)"/>
-    </g>` : `
-    <g clip-path="url(#heroClip)">
-      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="#121212"/>
-      <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" fill="url(#heroShade)"/>
-      <circle cx="${heroX}" cy="${heroY-heroH*.12}" r="${Math.min(heroW,heroH)*.17}" fill="rgba(255,255,255,.16)"/>
-      <path d="M${heroX-heroW*.20} ${heroY+heroH*.24} C${heroX-heroW*.13} ${heroY+heroH*.02} ${heroX+heroW*.13} ${heroY+heroH*.02} ${heroX+heroW*.20} ${heroY+heroH*.24} Z" fill="rgba(255,255,255,.13)"/>
-      <text x="${heroX}" y="${heroY+heroH*.40}" text-anchor="middle" fill="rgba(255,255,255,.18)" font-family="Arial Black, Arial" font-size="${isWide?28:34}" letter-spacing="8">FAN HERO</text>
-    </g>`;
-
-  const svg = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#030303"/>
-        <stop offset=".48" stop-color="#0b0b0b"/>
-        <stop offset="1" stop-color="${glow}"/>
-      </linearGradient>
-      <radialGradient id="redGlow" cx="78%" cy="22%" r="62%">
-        <stop offset="0" stop-color="${primary}" stop-opacity=".72"/>
-        <stop offset=".42" stop-color="${primary}" stop-opacity=".22"/>
-        <stop offset="1" stop-color="${primary}" stop-opacity="0"/>
-      </radialGradient>
-      <radialGradient id="goldGlow" cx="20%" cy="73%" r="42%">
-        <stop offset="0" stop-color="${secondary}" stop-opacity=".36"/>
-        <stop offset="1" stop-color="${secondary}" stop-opacity="0"/>
-      </radialGradient>
-      <linearGradient id="heroShade" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#000" stop-opacity=".10"/>
-        <stop offset=".52" stop-color="${primary}" stop-opacity=".18"/>
-        <stop offset="1" stop-color="#000" stop-opacity=".70"/>
-      </linearGradient>
-      <clipPath id="heroClip"><rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" rx="30"/></clipPath>
-      <filter id="soft"><feGaussianBlur stdDeviation="28"/></filter>
-    </defs>
-
-    <rect width="100%" height="100%" fill="url(#bg)"/>
-    <rect width="100%" height="100%" fill="url(#redGlow)"/>
-    <rect width="100%" height="100%" fill="url(#goldGlow)"/>
-
-    <g opacity=".10">
-      <path d="M0 ${height*.22} H${width}" stroke="#fff" stroke-width="1"/>
-      <path d="M0 ${height*.38} H${width}" stroke="${primary}" stroke-width="3"/>
-      <path d="M0 ${height*.62} H${width}" stroke="#fff" stroke-width="1"/>
-      <path d="M${width*.10} -80 L${width*.60} ${height+120}" stroke="${primary}" stroke-width="2"/>
-      <path d="M${width*.78} -80 L${width*.25} ${height+120}" stroke="#fff" stroke-width="1"/>
-      <path d="M${width*.92} -20 L${width*.42} ${height+130}" stroke="${secondary}" stroke-width="1"/>
-    </g>
-
-    <g opacity=".16" filter="url(#soft)">
-      <circle cx="${width*.82}" cy="${height*.25}" r="${Math.min(width,height)*.24}" fill="${primary}"/>
-      <circle cx="${width*.22}" cy="${height*.72}" r="${Math.min(width,height)*.18}" fill="${secondary}"/>
-    </g>
-
-    <text x="${width*.50}" y="${height*.52}" text-anchor="middle" fill="rgba(255,255,255,.025)" font-family="Arial Black, Arial" font-size="${Math.min(width,height)*.22}" letter-spacing="10">PADDOX</text>
-
-    <rect x="${margin}" y="${margin}" width="${innerW}" height="${innerH}" rx="38" fill="rgba(255,255,255,.018)" stroke="#ffffff" stroke-opacity=".13"/>
-    <rect x="${margin+16}" y="${margin+16}" width="${innerW-32}" height="${innerH-32}" rx="30" fill="none" stroke="${primary}" stroke-opacity=".32"/>
-
-    <g transform="translate(${textX},${isWide ? 70 : 82}) scale(${logoScale})">
-      <rect x="0" y="0" width="370" height="92" rx="24" fill="rgba(7,7,7,.44)" stroke="#fff" stroke-opacity=".08"/>
-      <text x="22" y="42" fill="#fff" font-family="Arial Black, Arial" font-size="36" letter-spacing="8">PADDO<tspan fill="${primary}">X</tspan></text>
-      <text x="25" y="68" fill="#aaa" font-family="Arial" font-size="13" letter-spacing="5">AI FAN STUDIO</text>
-      <text x="25" y="86" fill="${secondary}" font-family="Arial Black, Arial" font-size="9" letter-spacing="3">A4.11C.6 FAST GENERATION</text>
-    </g>
-
-    ${photoLayer}
-    <rect x="${heroX-heroW/2}" y="${heroY-heroH/2}" width="${heroW}" height="${heroH}" rx="30" fill="none" stroke="${secondary}" stroke-opacity=".34" stroke-width="2"/>
-    <path d="M${heroX-heroW*.46} ${heroY-heroH*.38} H${heroX+heroW*.46}" stroke="${primary}" stroke-opacity=".45" stroke-width="2"/>
-    <path d="M${heroX-heroW*.46} ${heroY+heroH*.38} H${heroX+heroW*.46}" stroke="#fff" stroke-opacity=".16" stroke-width="1"/>
-
-    <text x="${textX}" y="${editionY}" fill="${secondary}" font-family="Arial Black, Arial" font-size="${isWide?18:20}" letter-spacing="6">${escapedStyle} EDITION · ${escapedTeam}</text>
-    <text x="${textX}" y="${textY}" fill="#fff" font-family="Arial Black, Arial" font-size="${titleSize}" letter-spacing="4">${escapedName}</text>
-    <text x="${textX+4}" y="${textY+54}" fill="${primary}" font-family="Arial Black, Arial" font-size="${isWide?25:30}" letter-spacing="4">${escapedDriver}</text>
-    <foreignObject x="${textX+4}" y="${textY+78}" width="${isWide ? width*.44 : width*.55}" height="130">
-      <div xmlns="http://www.w3.org/1999/xhtml" style="font-family:Arial,sans-serif;color:#dadada;font-size:${isWide?20:23}px;line-height:1.32;letter-spacing:.4px;">${escapedPrompt}</div>
-    </foreignObject>
-
-    <g transform="translate(${width-355},${height-238})">
-      <rect width="252" height="126" rx="24" fill="#060606" fill-opacity=".76" stroke="#ffffff" stroke-opacity=".13"/>
-      <text x="32" y="46" fill="#999" font-family="Arial" font-size="14" letter-spacing="4">FICTIONAL</text>
-      <text x="32" y="86" fill="#fff" font-family="Arial Black, Arial" font-size="30" letter-spacing="3">FAN ART</text>
-      <path d="M174 29h40l-12 17h-42z" fill="${primary}" opacity=".85"/>
-    </g>
-
-    <text x="${margin+26}" y="${footerY}" fill="#858585" font-family="Arial" font-size="16" letter-spacing="4">GENERATED BY PADDOX · NOT OFFICIAL DRIVER ENDORSEMENT · A4.11C.6</text>
-    <text x="${width-margin-26}" y="${footerY}" fill="${primary}" font-family="Arial Black, Arial" font-size="21" text-anchor="end" letter-spacing="3">15 CREDITS</text>
-  </svg>`;
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+function aspectToSize(aspect = '') {
+  const a = String(aspect || '').toLowerCase();
+  if (a.includes('1:1')) return { width: 1024, height: 1024 };
+  if (a.includes('9:16')) return { width: 1024, height: 1792 };
+  if (a.includes('16:9')) return { width: 1792, height: 1024 };
+  if (a.includes('21:9')) return { width: 1792, height: 768 };
+  return { width: 1024, height: 1280 };
 }
 
-async function uploadDataUriToCloudinary(dataUri, userId) {
-  if (!cloudinary) return { url: dataUri, publicId: '', cloudinarySaved: false };
+function buildPromptFromRequest(body = {}) {
+  const payload = body.payload || {};
+  const prompt = cleanText(body.prompt || payload.prompt || '', 12000);
+  if (prompt) return prompt;
 
-  try {
-    const result = await withTimeout(cloudinary.uploader.upload(dataUri, {
-      folder: `paddox/ai-posters/${userId}`,
-      resource_type: 'image',
-      overwrite: false,
-      unique_filename: true,
-      use_filename: false,
-      transformation: [{ quality: 'auto', fetch_format: 'auto' }]
-    }), 6500, null);
+  const driver = payload.driver?.name || body.driverName || 'selected current-grid driver';
+  const team = payload.driver?.team || body.teamName || 'selected team';
+  const template = payload.template?.title || body.templateTitle || 'PADDOX AI fan poster';
+  const output = payload.output?.aspectLabel || body.outputFormat || 'Portrait Poster, 4:5 aspect ratio';
 
-    if (!result) {
-      console.warn('PADDOX AI poster Cloudinary save timed out. Returning data URI fallback.');
-      return { url: dataUri, publicId: '', cloudinarySaved: false, timeout: true };
-    }
+  return [
+    'PADDOX AI STUDIO REQUEST:',
+    `Template: ${template}.`,
+    `Current-grid driver: ${driver}.`,
+    `Team: ${team}.`,
+    `Output format: ${output}.`,
+    '',
+    'Create a photorealistic, hyper-realistic premium motorsport fan image using the uploaded fan photo as reference when provided.',
+    'Keep realistic skin texture, believable lens behavior, motorsport editorial lighting, and clean professional composition.',
+    'Avoid cartoon, anime, illustration, plastic skin, distorted fingers, extra limbs, duplicate faces, wrong team colors, messy sponsor text, and blurry identity.'
+  ].join('\n');
+}
 
-    return {
-      url: result.secure_url || result.url || dataUri,
-      publicId: result.public_id || '',
-      cloudinarySaved: true,
-      width: result.width || 0,
-      height: result.height || 0
-    };
-  } catch (err) {
-    console.warn('PADDOX AI poster Cloudinary save failed. Returning safe data URI fallback:', err.message);
-    return { url: dataUri, publicId: '', cloudinarySaved: false };
+async function generateWithGemini({ prompt, photoDataUrl }) {
+  const apiKey = getGeminiApiKey();
+  const model = getGeminiModel();
+
+  if (!apiKey) {
+    const error = new Error('GEMINI_API_KEY is missing. Add it in Render environment variables.');
+    error.code = 'GEMINI_KEY_MISSING';
+    throw error;
   }
+
+  const parts = [{ text: prompt }];
+  const photo = safePhotoDataUri(photoDataUrl);
+  const imagePart = splitDataUri(photo);
+  if (imagePart) {
+    parts.push({
+      inline_data: {
+        mime_type: imagePart.mimeType,
+        data: imagePart.data
+      }
+    });
+  }
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1/models/${encodeURIComponent(model)}:generateContent`;
+
+  const response = await axios.post(endpoint, {
+    contents: [{ parts }]
+  }, {
+    timeout: Number(process.env.GEMINI_TIMEOUT_MS || 90000),
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey
+    },
+    validateStatus: () => true
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    const msg = response.data?.error?.message || `Gemini request failed with ${response.status}`;
+    const err = new Error(msg);
+    err.status = response.status;
+    err.details = response.data?.error || null;
+    throw err;
+  }
+
+  const candidates = response.data?.candidates || [];
+  let text = '';
+
+  for (const candidate of candidates) {
+    const candidateParts = candidate?.content?.parts || [];
+    text += candidateParts.map(p => p.text).filter(Boolean).join('\n');
+
+    for (const part of candidateParts) {
+      const inline = part.inlineData || part.inline_data;
+      const mimeType = inline?.mimeType || inline?.mime_type || 'image/png';
+      if (inline?.data) {
+        return {
+          dataUri: `data:${mimeType};base64,${String(inline.data).replace(/[\r\n]/g, '')}`,
+          text: text.trim().slice(0, 1200),
+          model
+        };
+      }
+    }
+  }
+
+  throw new Error(text.trim() || 'Gemini did not return an image. Try a shorter prompt or another template.');
 }
 
+/* Phase A4.11H — Option 1 Simple:
+   Generate image and show it in AI Studio only.
+   No AiPoster database save and no Account sync in this phase. */
 exports.generatePoster = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) return errorResponse(res, 404, 'User not found');
 
+    const body = req.body || {};
+    const payload = body.payload || {};
+    const cost = safeCost(body.cost || payload.template?.creditCost || 30, 30);
     const before = normalizeAiCredits(user.aiCredits);
-    if (before < STANDARD_AI_POSTER_COST) {
+
+    if (before < cost) {
       return res.status(402).json({
         success: false,
-        message: `Not enough PADDOX Credits. You need ${STANDARD_AI_POSTER_COST} credits.`,
-        data: { aiCredits: before, required: STANDARD_AI_POSTER_COST }
+        message: `Not enough PADDOX Credits. You need ${cost} credits.`,
+        data: { aiCredits: before, required: cost }
       });
     }
 
-    const body = req.body || {};
-    const style = cleanText(body.style || 'VIP Paddock', 80);
-    const tone = cleanText(body.tone || '', 180);
-    const submittedFanName = cleanText(body.fanName || '', 60);
-    const profileFanName = cleanText(`${user.firstName || ''} ${user.lastName || ''}`.trim() || user.email?.split('@')?.[0] || 'PADDOX FAN', 60);
-    const fanName = (!submittedFanName || submittedFanName.toLowerCase() === 'paddox fan' || submittedFanName.toLowerCase() === 'your display name')
-      ? profileFanName
-      : submittedFanName;
-    const driverInspiration = cleanText(body.driverInspiration || 'Driver-inspired', 80);
-    const teamMood = cleanText(body.teamMood || 'PADDOX Red', 80);
-    const outputFormat = cleanText(body.outputFormat || 'Portrait 4:5', 40);
-    const creativePrompt = cleanText(body.creativePrompt || '', 420);
-    const promptUsed = buildSafePrompt({ style, tone, fanName, driverInspiration, teamMood, outputFormat, creativePrompt });
+    const prompt = buildPromptFromRequest(body);
+    const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
 
-    const studioMode = getAiStudioMode();
-    let provider = studioMode.provider;
-    let providerMode = studioMode.providerMode;
-    let dataUri = '';
-    let geminiText = '';
-    let geminiError = '';
+    const gemini = await generateWithGemini({ prompt, photoDataUrl });
 
-    if (studioMode.liveRequested) {
-      try {
-        const geminiResult = await generateWithGemini({ promptUsed, body, outputFormat });
-        dataUri = geminiResult.dataUri;
-        provider = 'gemini';
-        providerMode = 'live';
-        geminiText = geminiResult.text || '';
-      } catch (err) {
-        geminiError = err.message || 'Gemini generation failed';
-        console.warn('PADDOX Gemini live generation failed; using fallback poster:', geminiError);
-        dataUri = await buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
-        provider = 'paddox-preview';
-        providerMode = 'live-fallback';
-      }
-    } else {
-      dataUri = await buildPlaceholderSvg({ fanName, style, driverInspiration, teamMood, outputFormat, creativePrompt, promptUsed, photoDataUrl: body.photoDataUrl });
-    }
-
-    const uploaded = await uploadDataUriToCloudinary(dataUri, user._id.toString());
-
-    user.aiCredits = Math.max(0, before - STANDARD_AI_POSTER_COST);
+    user.aiCredits = Math.max(0, before - cost);
     await user.save({ validateBeforeSave:false });
 
-    const poster = await AiPoster.create({
-      user: user._id,
-      fanName,
-      style,
-      tone,
-      driverInspiration,
-      teamMood,
-      outputFormat,
-      creativePrompt,
-      promptUsed,
-      provider,
-      providerMode,
-      cost: STANDARD_AI_POSTER_COST,
+    const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
+
+    return successResponse(res, 201, 'Gemini image generated successfully.', {
+      image: {
+        url: gemini.dataUri,
+        dataUri: gemini.dataUri,
+        width: outputSize.width,
+        height: outputSize.height,
+        cloudinarySaved: false
+      },
+      aiCredits: user.aiCredits,
+      cost,
       creditsBefore: before,
       creditsAfter: user.aiCredits,
-      image: uploaded,
-      status: 'generated',
-      meta: {
-        hasUserPhoto: !!body.photoDataUrl,
-        realProviderEnabled: studioMode.liveRequested,
-        geminiModel: studioMode.model,
-        geminiText,
-        geminiError,
-        note: providerMode === 'live'
-          ? 'A4.11D: Real Gemini image generation succeeded.'
-          : providerMode === 'live-fallback'
-            ? 'A4.11D: Gemini failed, safe PADDOX fallback generated instead.'
-            : 'A4.11D: Preview mode fallback poster generated. Set GEMINI_API_KEY + AI_IMAGE_PROVIDER=gemini + AI_STUDIO_MODE=live for real Gemini mode.'
-      }
-    });
-
-    return successResponse(res, 201, providerMode === 'live' ? 'Gemini AI poster generated. 15 credits used.' : providerMode === 'live-fallback' ? 'Gemini was unavailable, PADDOX fallback poster generated. 15 credits used.' : 'AI poster generated. 15 credits used.', {
-      poster,
-      aiCredits: user.aiCredits,
-      cost: STANDARD_AI_POSTER_COST,
-      provider,
-      providerMode,
-      geminiError
+      provider: 'gemini',
+      providerMode: 'live-simple',
+      model: gemini.model,
+      geminiText: gemini.text,
+      savedToDatabase: false,
+      note: 'A4.11H Option 1: generated image is returned directly to AI Studio only.'
     });
   } catch (err) {
-    return serverError(res, err, 'AI poster generation failed');
+    const status = err.code === 'GEMINI_KEY_MISSING' ? 503 : 500;
+    console.error('AI Studio Gemini generation failed:', err.details || err);
+    return res.status(status).json({
+      success: false,
+      message: err.message || 'Gemini generation failed',
+      data: {
+        provider: 'gemini',
+        providerMode: 'live-simple',
+        model: getGeminiModel(),
+        code: err.code || 'GEMINI_GENERATION_FAILED'
+      }
+    });
   }
 };
 
