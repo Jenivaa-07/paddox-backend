@@ -156,6 +156,28 @@ async function generateWithGemini({ prompt, photoDataUrl }) {
   throw new Error(text.trim() || 'Gemini did not return an image. Try a shorter prompt or another template.');
 }
 
+
+/* Phase A4.11H.1 — Real credits sync endpoint for AI Studio frontend. */
+exports.getCredits = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('firstName lastName email aiCredits');
+    if (!user) return errorResponse(res, 404, 'User not found');
+
+    return successResponse(res, 200, 'AI credits synced', {
+      aiCredits: normalizeAiCredits(user.aiCredits),
+      user: {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        aiCredits: normalizeAiCredits(user.aiCredits)
+      }
+    });
+  } catch (err) {
+    return serverError(res, err, 'AI credits sync failed');
+  }
+};
+
 /* Phase A4.11H — Option 1 Simple:
    Generate image and show it in AI Studio only.
    No AiPoster database save and no Account sync in this phase. */

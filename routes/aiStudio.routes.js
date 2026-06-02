@@ -16,6 +16,7 @@ const protect =
       ? auth.authMiddleware
       : noopProtect;
 
+router.get('/credits', protect, aiStudio.getCredits);
 router.post('/generate', protect, aiStudio.generatePoster);
 router.get('/gallery', protect, aiStudio.getMyPosters);
 
