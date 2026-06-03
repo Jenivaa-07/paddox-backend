@@ -76,46 +76,49 @@ function buildFluxPrompt(body = {}) {
   const driver = payload.driver || {};
   const fan = payload.fan || {};
   const aspect = payload.output?.aspectRatio || body.aspectRatio || '4:5';
-  const templateTitle = cleanText(selectedTemplate.title || body.templateTitle || 'PADDOX motorsport visual', 160);
-  const team = cleanText(driver.team || body.teamName || 'Formula 1 team', 120);
-  const driverName = cleanText(driver.name || body.driverName || 'Formula 1 driver', 120);
-  const fanName = cleanText(fan.name || body.fanName || 'fan', 120);
-  const tagline = cleanText(fan.tagline || body.tagline || '', 220);
-  const photoUploaded = Boolean(body.photoDataUrl || payload.photo?.included || payload.photo?.name);
-  const promptHints = [];
-
-  promptHints.push(`Photorealistic premium Formula 1 visual for PADDOX, template style: ${templateTitle}.`);
+  const templateTitle = cleanText(selectedTemplate.title || body.templateTitle || 'PADDOX motorsport visual', 80);
+  const team = cleanText(driver.team || body.teamName || 'Formula 1 team', 70);
+  const driverName = cleanText(driver.name || body.driverName || 'Formula 1 driver', 70);
+  const fanName = cleanText(fan.name || body.fanName || 'fan', 70);
+  const tagline = cleanText(fan.tagline || body.tagline || '', 90);
+  const photoUploaded = Boolean(
+    body.photoDataUrl ||
+    payload.references?.fanPhoto?.dataUrl ||
+    payload.photo?.included ||
+    payload.photo?.name ||
+    payload.photo?.fileName
+  );
 
   const templateId = String(selectedTemplate.id || '').toLowerCase();
+  let scene = `${templateTitle}: photorealistic Formula 1 motorsport image with ${fanName} and ${driverName}.`;
+
   if (templateId.includes('selfie')) {
-    promptHints.push(`Nighttime Formula 1 pit lane smartphone selfie featuring ${fanName} and ${driverName}.`);
-    promptHints.push('Front-camera selfie framing, shoulders-up close crop, both faces large in frame, slight wide-angle phone distortion, natural candid selfie energy.');
+    scene = `Photorealistic night Formula 1 pit lane smartphone selfie with ${fanName} and ${driverName}, close shoulders-up front-camera framing, both smiling at camera.`;
   } else if (templateId.includes('podium')) {
-    promptHints.push(`${driverName} in a podium celebration scene with a premium racing atmosphere.`);
-    promptHints.push('Heroic close-up sports photography framing, trophy celebration energy, realistic crowd and lights in the background.');
+    scene = `Photorealistic Formula 1 podium celebration with ${fanName} and ${driverName}, trophy lights, premium race-week atmosphere.`;
+  } else if (templateId.includes('garage')) {
+    scene = `Photorealistic modern ${team} Formula 1 garage portrait with ${fanName} and ${driverName}, premium paddock lighting, blurred crew and monitors.`;
   } else if (templateId.includes('helmet') || templateId.includes('cockpit')) {
-    promptHints.push(`${driverName} in a dramatic Formula 1 helmet or cockpit inspired scene.`);
-    promptHints.push('High-detail close-up framing, premium motorsport lighting, cinematic composition.');
-  } else {
-    promptHints.push(`${driverName} featured in a premium Formula 1 themed scene with ${fanName}.`);
-    promptHints.push('Balanced close-up composition, premium sports photography, authentic paddock atmosphere.');
+    scene = `Photorealistic Formula 1 helmet/cockpit hero image with ${fanName} and ${driverName}, dramatic close-up racing light.`;
   }
 
-  promptHints.push(`Show realistic ${team} styling, believable team colors, motorsport detailing, and an authentic Formula 1 environment.`);
+  const identity = photoUploaded
+    ? `Use uploaded fan photo as loose identity reference for ${fanName}: face shape, skin tone, hairstyle, facial hair, accessories.`
+    : `${fanName} appears as a realistic fan character.`;
 
-  if (photoUploaded) {
-    promptHints.push(`Use the uploaded fan photo as identity guidance for ${fanName}; preserve the fan's general facial structure, skin tone, hairstyle, facial hair, and visible accessories as closely as possible.`);
-  }
+  const parts = [
+    scene,
+    `${driverName} has realistic likeness and wears believable ${team} racing suit.`,
+    `Authentic ${team} colors, race garage/pit lane details, cinematic sports photography, sharp eyes, natural skin texture, high detail.`,
+    identity,
+    tagline ? `Mood: ${tagline}.` : '',
+    `Aspect ${aspect}. Negative: cartoon, painting, blurry face, duplicate face, extra fingers, bad hands, deformed anatomy, wrong team colors, messy text.`
+  ].filter(Boolean);
 
-  promptHints.push(`${driverName} should have a realistic facial likeness and wear a believable ${team} race suit or motorsport outfit.`);
-  if (tagline) promptHints.push(`Creative mood: ${tagline}.`);
-
-  promptHints.push(`Output ratio ${aspect}. Real smartphone or sports-photography lighting, crisp facial detail, natural skin texture, sharp eyes, premium realistic image quality.`);
-  promptHints.push('Negative: distant shot, full body only, studio portrait, cartoon, painting, blurry face, duplicate face, extra fingers, distorted hands, deformed anatomy, low detail, incorrect team colors.');
-
-  return promptHints.join(' ');
+  let prompt = parts.join(' ');
+  if (prompt.length > 790) prompt = prompt.slice(0, 790).replace(/\s+\S*$/, '').trim();
+  return prompt;
 }
-
 function getRequestedCost(body = {}) {
   const value = Number(body.cost ?? body.creditCost ?? body.payload?.template?.creditCost ?? 50);
   return Number.isFinite(value) ? Math.max(0, Math.round(value)) : 50;
