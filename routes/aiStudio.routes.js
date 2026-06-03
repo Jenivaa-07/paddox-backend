@@ -18,6 +18,7 @@ const protect =
 
 router.get('/credits', protect, aiStudio.getCredits);
 router.post('/generate', protect, aiStudio.generatePoster);
+router.post('/upload-result', protect, aiStudio.uploadResult);
 router.get('/gallery', protect, aiStudio.getMyPosters);
 
 module.exports = router;
