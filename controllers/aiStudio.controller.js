@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: controllers/aiStudio.controller.js
-   PADDOX — AI Fan Studio Colab Hugging Face Free API Bridge
-   Phase A4.11L
+   PADDOX — AI Fan Studio Gemini Only Restore Fix
+   Phase A4.11L.1
    ============================================================ */
 const User = require('../models/User');
 const AiPoster = require('../models/AiPoster');
@@ -120,122 +120,6 @@ function aspectToSize(aspect = '') {
   if (a.includes('16:9')) return { width: 1792, height: 1024 };
   if (a.includes('21:9')) return { width: 1792, height: 768 };
   return { width: 1024, height: 1280 };
-}
-
-function getColabAiBaseUrl() {
-  return String(process.env.COLAB_AI_API_URL || process.env.AI_STUDIO_COLAB_URL || '').trim().replace(/\/$/, '');
-}
-
-function getColabAiApiKey() {
-  return String(process.env.COLAB_AI_API_KEY || '').trim();
-}
-
-function getColabAiModel() {
-  return String(process.env.COLAB_AI_MODEL || 'black-forest-labs/FLUX.1-schnell').trim();
-}
-
-function normalizeExternalImageData(payload = {}) {
-  const candidates = [
-    payload?.image,
-    payload?.image_url,
-    payload?.imageUrl,
-    payload?.dataUri,
-    payload?.data_uri,
-    payload?.image_data,
-    payload?.imageData,
-    payload?.generated_image,
-    payload?.output?.image,
-    payload?.output?.image_url,
-    payload?.output?.imageUrl,
-    payload?.output?.dataUri,
-    payload?.output?.data_uri,
-    payload?.result?.image,
-    payload?.result?.image_url,
-    payload?.result?.imageUrl,
-    payload?.result?.dataUri,
-    payload?.result?.data_uri
-  ].filter(Boolean);
-
-  for (const item of candidates) {
-    const text = String(item || '').trim();
-    if (!text) continue;
-    if (/^data:image\//i.test(text)) return text;
-    if (/^[A-Za-z0-9+/=\r\n]+$/.test(text) && text.length > 1000 && !/^https?:\/\//i.test(text)) {
-      return `data:image/png;base64,${text.replace(/[\r\n]/g, '')}`;
-    }
-    if (/^https?:\/\//i.test(text)) return text;
-  }
-  return '';
-}
-
-async function generateWithColabBridge({ prompt, photoDataUrl, aspectRatio, payload = {} }) {
-  const baseUrl = getColabAiBaseUrl();
-  if (!baseUrl) {
-    const error = new Error('COLAB_AI_API_URL is missing. Add your Colab/ngrok API URL in Render environment variables.');
-    error.code = 'COLAB_URL_MISSING';
-    error.status = 500;
-    throw error;
-  }
-
-  const size = aspectToSize(aspectRatio || payload?.output?.aspectRatio || '');
-  const endpoint = /\/generate$/i.test(baseUrl) ? baseUrl : `${baseUrl}/generate`;
-  const apiKey = getColabAiApiKey();
-
-  const requestBody = {
-    prompt,
-    model: getColabAiModel(),
-    aspect_ratio: String(aspectRatio || payload?.output?.aspectRatio || '4:5'),
-    width: size.width,
-    height: size.height,
-    photo_data_url: safePhotoDataUri(photoDataUrl || payload?.references?.fanPhoto?.dataUrl || ''),
-    template: payload?.template?.title || '',
-    driver_name: payload?.driver?.name || '',
-    team_name: payload?.driver?.team || '',
-    fan_name: payload?.fan?.name || '',
-    meta: {
-      provider: 'colab-hf-bridge',
-      promptVersion: payload?.promptVersion || '',
-      requiresUserPhoto: Boolean(payload?.template?.requiresUserPhoto)
-    }
-  };
-
-  const response = await axios.post(endpoint, requestBody, {
-    timeout: Number(process.env.COLAB_AI_TIMEOUT_MS || 180000),
-    validateStatus: () => true,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
-    }
-  });
-
-  if (response.status < 200 || response.status >= 300) {
-    const detail = response.data?.message || response.data?.error || response.data || `HTTP ${response.status}`;
-    const error = new Error('Colab AI generation failed.');
-    error.code = response.status === 401 || response.status === 403 ? 'COLAB_AUTH_FAILED' : 'COLAB_GENERATION_FAILED';
-    error.status = response.status || 503;
-    error.model = getColabAiModel();
-    error.details = sanitizeGeminiDetail(detail);
-    throw error;
-  }
-
-  const image = normalizeExternalImageData(response.data || {});
-  if (!image) {
-    const error = new Error('Colab AI API returned success but no usable image was found.');
-    error.code = 'COLAB_NO_IMAGE_RETURNED';
-    error.status = 502;
-    error.model = getColabAiModel();
-    error.details = sanitizeGeminiDetail(response.data || {});
-    throw error;
-  }
-
-  return {
-    dataUri: image,
-    model: String(response.data?.model || response.data?.meta?.model || getColabAiModel()),
-    provider: 'colab-hf-bridge',
-    providerMode: 'colab-hf-free-api',
-    text: String(response.data?.message || 'Image created through PADDOX Colab Hugging Face bridge.'),
-    meta: response.data?.meta || {}
-  };
 }
 
 function buildPromptFromRequest(body = {}) {
@@ -447,9 +331,9 @@ exports.getCredits = async (req, res) => {
   }
 };
 
-/* Phase A4.11H — Option 1 Simple:
+/* Phase A4.11L.1 — Gemini Only Restore:
    Generate image using Gemini only and show it in AI Studio.
-   Cloudflare fallback removed to protect PADDOX premium output quality. */
+   All fallback providers removed for this Gemini-only API key test. */
 exports.generatePoster = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -470,11 +354,11 @@ exports.generatePoster = async (req, res) => {
 
     const prompt = buildPromptFromRequest(body);
     const photoDataUrl = body.photoDataUrl || payload.references?.fanPhoto?.dataUrl || '';
-    const generated = await generateWithColabBridge({
+    const aspectRatio = payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '';
+    const generated = await generateImageWithGeminiOnly({
       prompt,
       photoDataUrl,
-      aspectRatio: payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '',
-      payload
+      aspectRatio
     });
 
     user.aiCredits = Math.max(0, before - cost);
@@ -482,7 +366,7 @@ exports.generatePoster = async (req, res) => {
 
     const outputSize = aspectToSize(payload.output?.aspectRatio || body.aspectRatio || payload.output?.aspectLabel || '');
 
-    return successResponse(res, 201, 'Colab AI image generated successfully.', {
+    return successResponse(res, 201, 'Gemini AI image generated successfully.', {
       image: {
         url: generated.dataUri,
         dataUri: generated.dataUri,
@@ -494,15 +378,15 @@ exports.generatePoster = async (req, res) => {
       cost,
       creditsBefore: before,
       creditsAfter: user.aiCredits,
-      provider: generated.provider || 'colab-hf-bridge',
-      providerMode: generated.providerMode || 'colab-hf-free-api',
+      provider: generated.provider || 'gemini',
+      providerMode: generated.providerMode || 'gemini-live',
       model: generated.model,
       providerText: generated.text,
       savedToDatabase: false,
       fallbackFrom: '',
       providerErrors: [],
-      bridgeMeta: generated.meta || {},
-      note: 'A4.11L: PADDOX Colab Hugging Face free API bridge. PADDOX Credits deduct only after successful external Colab generation.'
+      geminiMeta: generated.meta || {},
+      note: 'A4.11L.1: PADDOX Gemini-only generation. PADDOX Credits deduct only after successful Gemini image generation.'
     });
   } catch (err) {
     let currentCredits = null;
@@ -513,23 +397,23 @@ exports.generatePoster = async (req, res) => {
       }
     } catch {}
 
-    console.error('AI Studio Colab bridge generation failed:', err.details || err);
+    console.error('AI Studio Gemini generation failed:', err.details || err);
     return res.status(err.status || 503).json({
       success: false,
-      message: err.code === 'COLAB_URL_MISSING'
-        ? 'Colab AI bridge is not configured yet. Your credits were not deducted.'
-        : 'Colab AI generation is temporarily unavailable. Your credits were not deducted.',
+      message: err.code === 'GEMINI_KEY_MISSING'
+        ? 'Gemini API key is not configured yet. Your credits were not deducted.'
+        : 'Gemini AI generation is temporarily unavailable. Your credits were not deducted.',
       data: {
-        provider: 'colab-hf-bridge',
-        providerMode: 'colab-hf-free-api',
-        model: err.model || getColabAiModel(),
-        code: err.code || 'COLAB_GENERATION_UNAVAILABLE',
+        provider: 'gemini',
+        providerMode: 'gemini-live',
+        model: err.model || getGeminiModel(),
+        code: err.code || 'GEMINI_GENERATION_UNAVAILABLE',
         aiCredits: currentCredits,
         creditsUsed: 0,
         creditDeducted: false,
         providerErrors: err.details ? [{ message: String(err.details) }] : [],
-        bridgeOriginalMessage: err.message || '',
-        retryAdvice: 'Check COLAB_AI_API_URL and your Colab/ngrok notebook server. PADDOX Credits remain safe.'
+        geminiOriginalMessage: err.message || '',
+        retryAdvice: 'Check GEMINI_API_KEY, GEMINI_IMAGE_MODEL, and Render deploy logs. PADDOX Credits remain safe.'
       }
     });
   }
