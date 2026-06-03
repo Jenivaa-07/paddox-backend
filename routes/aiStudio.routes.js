@@ -1,7 +1,7 @@
 /* ============================================================
    FILE: routes/aiStudio.routes.js
    PADDOX — AI Fan Studio Routes
-   Phase A4.11C
+   Phase A4.11N
    ============================================================ */
 const express = require('express');
 const router = express.Router();
