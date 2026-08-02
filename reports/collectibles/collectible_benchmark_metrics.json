@@ -1,0 +1,71 @@
+{
+  "systemInfo": {
+    "nodeVersion": "v24.13.0",
+    "os": "Windows_NT 10.0.26200",
+    "cpuModel": "13th Gen Intel(R) Core(TM) i7-13620H",
+    "cpuCount": 16,
+    "ramBytes": 25380823040,
+    "databaseMode": "Replica Set",
+    "replicaSetStatus": "Active"
+  },
+  "Service-level issuance": {
+    "warmupCount": 10,
+    "measuredCallCount": 50,
+    "successfulResponseCount": 50,
+    "rejectedResponseCount": 0,
+    "min": 508.9741999999969,
+    "max": 3424.109500000006,
+    "mean": 1189.987451999999,
+    "p50": 1153.051299999992,
+    "p95": 2010.721900000004,
+    "stdDev": 560.9823359385069
+  },
+  "API-level issuance": {
+    "warmupCount": 10,
+    "measuredCallCount": 50,
+    "successfulResponseCount": 0,
+    "rejectedResponseCount": 50,
+    "min": 450.38320000001113,
+    "max": 6673.5077000000165,
+    "mean": 1067.207238000002,
+    "p50": 860.6347999999998,
+    "p95": 1959.586100000015,
+    "stdDev": 903.114221737177
+  },
+  "API-level retrieval": {
+    "warmupCount": 10,
+    "measuredCallCount": 50,
+    "successfulResponseCount": 50,
+    "rejectedResponseCount": 0,
+    "min": 145.22359999999753,
+    "max": 2910.9774000000034,
+    "mean": 652.578222,
+    "p50": 438.47510000001057,
+    "p95": 1581.5755000000063,
+    "stdDev": 588.4862810992815
+  },
+  "Service-level retrieval": {
+    "warmupCount": 10,
+    "measuredCallCount": 50,
+    "successfulResponseCount": 50,
+    "rejectedResponseCount": 0,
+    "min": 146.13439999998081,
+    "max": 3660.0481000000145,
+    "mean": 672.612073999999,
+    "p50": 468.65159999998286,
+    "p95": 2097.279500000004,
+    "stdDev": 659.4890721184101
+  },
+  "Concurrent final-edition contention": {
+    "warmupCount": 10,
+    "measuredCallCount": 50,
+    "successfulResponseCount": 1,
+    "rejectedResponseCount": 49,
+    "min": 10777.539400000009,
+    "max": 16068.281099999964,
+    "mean": 12077.595151999993,
+    "p50": 11848.16419999997,
+    "p95": 14234.756500000018,
+    "stdDev": 996.890691607048
+  }
+}

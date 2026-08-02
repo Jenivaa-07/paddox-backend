@@ -1,0 +1,12 @@
+node_modules/
+.env
+.env.production
+*.log
+coverage/
+.DS_Store
+scripts/fastf1-cache/
+data/cache/
+data/raw/
+controllers/aiStudio*
+routes/aiStudio*
+*.sqlite
