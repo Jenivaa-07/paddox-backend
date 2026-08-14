@@ -16,12 +16,12 @@ const authMiddleware = require('../middleware/auth.middleware') || {};
 const protect =
   typeof authMiddleware.protect === 'function'
     ? authMiddleware.protect
-    : (req, res, next) => next();
+    : (req, res) => res.status(503).json({ success:false, message:'Authentication middleware is unavailable' });
 
 const adminOnly =
   typeof authMiddleware.adminOnly === 'function'
     ? authMiddleware.adminOnly
-    : (req, res, next) => next();
+    : (req, res) => res.status(503).json({ success:false, message:'Admin authorization middleware is unavailable' });
 
 function missingHandler(name) {
   return (req, res) => res.status(501).json({

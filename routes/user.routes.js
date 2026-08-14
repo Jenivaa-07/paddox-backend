@@ -23,8 +23,11 @@ try {
   console.warn('PADDOX auth.middleware not loaded:', err.message);
 }
 
-function noopProtect(req, res, next) {
-  return next();
+function unavailableAuth(req, res) {
+  return res.status(503).json({
+    success: false,
+    message: 'Authentication middleware is unavailable',
+  });
 }
 
 const protect =
@@ -32,14 +35,14 @@ const protect =
     ? auth.protect
     : typeof auth.authMiddleware === 'function'
       ? auth.authMiddleware
-      : noopProtect;
+      : unavailableAuth;
 
 const adminOnly =
   typeof auth.adminOnly === 'function'
     ? auth.adminOnly
     : typeof auth.isAdmin === 'function'
       ? auth.isAdmin
-      : noopProtect;
+      : unavailableAuth;
 
 function pickHandler(names, fallbackLabel) {
   for (const name of names) {

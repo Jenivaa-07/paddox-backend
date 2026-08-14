@@ -8,13 +8,15 @@ const router = express.Router();
 const aiStudio = require('../controllers/aiStudio.controller');
 const auth = require('../middleware/auth.middleware') || {};
 
-function noopProtect(req, res, next) { return next(); }
+function unavailableAuth(req, res) {
+  return res.status(503).json({ success:false, message:'Authentication middleware is unavailable' });
+}
 const protect =
   typeof auth.protect === 'function'
     ? auth.protect
     : typeof auth.authMiddleware === 'function'
       ? auth.authMiddleware
-      : noopProtect;
+      : unavailableAuth;
 
 router.get('/credits', protect, aiStudio.getCredits);
 router.post('/generate', protect, aiStudio.generatePoster);

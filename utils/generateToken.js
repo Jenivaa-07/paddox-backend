@@ -27,17 +27,40 @@ const generateRefreshToken = (id) => {
   );
 };
 
+const productionCookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  // Production traffic reaches the API through the same-origin Vercel /api
+  // rewrite, so strict cookies work without third-party-cookie exceptions.
+  sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+});
+
+/**
+ * Set the short-lived access token as an HttpOnly cookie.
+ */
+const setAccessCookie = (res, accessToken) => {
+  res.cookie('accessToken', accessToken, {
+    ...productionCookieOptions(),
+    maxAge: 15 * 60 * 1000,
+    path: '/api',
+  });
+};
+
 /**
  * Set refresh token as httpOnly cookie
  */
 const setRefreshCookie = (res, refreshToken) => {
-  const isProduction = process.env.NODE_ENV === 'production';
   res.cookie('refreshToken', refreshToken, {
-    httpOnly: true,
-    secure  : isProduction,
-    sameSite: isProduction ? 'strict' : 'lax',
+    ...productionCookieOptions(),
     maxAge  : 7 * 24 * 60 * 60 * 1000, // 7 days in ms
     path    : '/api/auth',
+  });
+};
+
+const clearAccessCookie = (res) => {
+  res.clearCookie('accessToken', {
+    ...productionCookieOptions(),
+    path: '/api',
   });
 };
 
@@ -45,12 +68,17 @@ const setRefreshCookie = (res, refreshToken) => {
  * Clear refresh token cookie
  */
 const clearRefreshCookie = (res) => {
-  res.clearCookie('refreshToken', { path: '/api/auth' });
+  res.clearCookie('refreshToken', {
+    ...productionCookieOptions(),
+    path: '/api/auth',
+  });
 };
 
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
+  setAccessCookie,
   setRefreshCookie,
+  clearAccessCookie,
   clearRefreshCookie,
 };

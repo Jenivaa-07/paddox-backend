@@ -7,6 +7,7 @@ const FanPoints  = require('../models/FanPoints');
 const DigitalAsset = require('../models/DigitalAsset');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { cloudinary } = require('../config/cloudinary');
+const { clearAccessCookie, clearRefreshCookie } = require('../utils/generateToken');
 
 function serverError(res, err, label = 'Server error') {
   console.error(label, err);
@@ -290,6 +291,8 @@ exports.updatePassword = async (req, res) => {
     user.refreshToken = '';
     await user.save();
 
+    clearAccessCookie(res);
+    clearRefreshCookie(res);
     return successResponse(res, 200, 'Password updated. Please login again.');
   } catch (err) {
     return serverError(res, err, 'Password update failed');

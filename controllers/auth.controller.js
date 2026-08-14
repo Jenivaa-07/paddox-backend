@@ -5,7 +5,14 @@ const crypto = require('crypto');
 const jwt    = require('jsonwebtoken');
 const User   = require('../models/User');
 const FanPoints = require('../models/FanPoints');
-const { generateAccessToken, generateRefreshToken, setRefreshCookie, clearRefreshCookie } = require('../utils/generateToken');
+const {
+  generateAccessToken,
+  generateRefreshToken,
+  setAccessCookie,
+  setRefreshCookie,
+  clearAccessCookie,
+  clearRefreshCookie,
+} = require('../utils/generateToken');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 const { sendEmail } = require('../config/resend');
 
@@ -137,6 +144,7 @@ async function completeLogin(user, req, res, message = 'Login successful') {
   user.lastLogin     = new Date();
   await user.save({ validateBeforeSave:false });
   const sessionId = await attachSession(user, req, res);
+  setAccessCookie(res, accessToken);
   setRefreshCookie(res, refreshToken);
   return successResponse(res, 200, message, {
     accessToken,
@@ -173,6 +181,8 @@ exports.register = async (req, res, next) => {
     user.lastLogin     = new Date();
     await user.save({ validateBeforeSave:false });
 
+    const sessionId = await attachSession(user, req, res);
+    setAccessCookie(res, accessToken);
     setRefreshCookie(res, refreshToken);
 
     /* Send welcome email */
@@ -184,6 +194,7 @@ exports.register = async (req, res, next) => {
 
     successResponse(res, 201, 'Account created successfully', {
       accessToken,
+      sessionId,
       user: { id:user._id, firstName:user.firstName, lastName:user.lastName, email:user.email, role:user.role, fanPoints:user.fanPoints, fanTier:user.fanTier },
     });
   } catch (err) { next(err); }
@@ -244,6 +255,7 @@ exports.refresh = async (req, res, next) => {
     user.refreshToken     = newRefreshToken;
     await user.save({ validateBeforeSave:false });
 
+    setAccessCookie(res, newAccessToken);
     setRefreshCookie(res, newRefreshToken);
     successResponse(res, 200, 'Token refreshed', { accessToken: newAccessToken });
   } catch (err) { next(err); }
@@ -253,6 +265,7 @@ exports.refresh = async (req, res, next) => {
 exports.logout = async (req, res, next) => {
   try {
     await User.findByIdAndUpdate(req.user._id, { refreshToken:'' });
+    clearAccessCookie(res);
     clearRefreshCookie(res);
     successResponse(res, 200, 'Logged out successfully');
   } catch (err) { next(err); }
@@ -262,7 +275,7 @@ exports.logout = async (req, res, next) => {
 exports.getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
-    successResponse(res, 200, 'User fetched', { user });
+    successResponse(res, 200, 'User fetched', { user: userPublic(user) });
   } catch (err) { next(err); }
 };
 
@@ -324,6 +337,8 @@ exports.resetPassword = async (req, res, next) => {
     user.refreshToken        = '';
     await user.save();
 
+    clearAccessCookie(res);
+    clearRefreshCookie(res);
     successResponse(res, 200, 'Password reset successful. Please log in.');
   } catch (err) { next(err); }
 };
