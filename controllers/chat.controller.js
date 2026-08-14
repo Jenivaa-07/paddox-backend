@@ -1,4 +1,5 @@
 const { askGroundedChat } = require('../services/aiClient.service');
+const { buildLiveContext, buildUserContext } = require('../services/chatContext.service');
 const { successResponse, errorResponse } = require('../utils/apiResponse');
 
 const SOURCE_LABELS = Object.freeze({
@@ -8,6 +9,8 @@ const SOURCE_LABELS = Object.freeze({
   'f1_terminology.md': 'Curated F1 Terminology',
   'fia_regulations.md': 'FIA 2026 Regulations',
   'historical_data.md': 'PADDOX Historical Data Guide',
+  'live_f1_context': 'Current Formula 1 Data',
+  'paddox_profile': 'Your PADDOX Fan Profile',
 });
 
 const cleanText = (value, maxLength) => String(value || '')
@@ -17,6 +20,15 @@ const cleanText = (value, maxLength) => String(value || '')
   .slice(0, maxLength);
 
 const normalizeQuestion = (value) => typeof value === 'string' ? cleanText(value, 600) : '';
+
+const normalizeHistory = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-8).map((turn) => {
+    if (!turn || !['user', 'assistant'].includes(turn.role)) return null;
+    const content = cleanText(turn.content, 1000);
+    return content ? { role: turn.role, content } : null;
+  }).filter(Boolean);
+};
 
 const normalizeSource = (source) => {
   const record = typeof source === 'string' ? { source } : (source || {});
@@ -43,17 +55,32 @@ const normalizeChatPayload = (payload = {}) => {
     sources: grounded ? sources : [],
     requestId: cleanText(payload.request_id, 80),
     dataAsOf: cleanText(payload.data_as_of, 40),
+    suggestions: (Array.isArray(payload.suggestions) ? payload.suggestions : [])
+      .map((item) => cleanText(item, 120))
+      .filter(Boolean)
+      .slice(0, 3),
   };
 };
 
 exports.ask = async (req, res) => {
   const query = normalizeQuestion(req.body?.query);
+  const history = normalizeHistory(req.body?.history);
   if (query.length < 2) {
     return errorResponse(res, 400, 'Enter a question with at least 2 characters.');
   }
 
   try {
-    const payload = await askGroundedChat(query);
+    const previousUserQuestion = [...history].reverse().find((turn) => turn.role === 'user')?.content || '';
+    const contextQuery = previousUserQuestion ? `${previousUserQuestion}\nFollow-up: ${query}` : query;
+    const liveContext = await buildLiveContext(contextQuery).catch((error) => {
+      console.warn('AI Pit Wall live context unavailable:', error.message);
+      return null;
+    });
+    const payload = await askGroundedChat(query, {
+      history,
+      liveContext,
+      userContext: buildUserContext(req.user),
+    });
     if (payload?.status !== 'success') {
       throw new Error('AI service returned a non-success response');
     }
@@ -65,4 +92,5 @@ exports.ask = async (req, res) => {
 };
 
 exports.normalizeQuestion = normalizeQuestion;
+exports.normalizeHistory = normalizeHistory;
 exports.normalizeChatPayload = normalizeChatPayload;

@@ -4,7 +4,7 @@ const clampTimeout = (value) => Math.min(60000, Math.max(5000, Number(value) || 
 
 const getAIServiceUrl = () => String(process.env.AI_SERVICE_URL || '').trim().replace(/\/$/, '');
 
-const askGroundedChat = async (query) => {
+const askGroundedChat = async (query, context = {}) => {
   const baseUrl = getAIServiceUrl();
   if (!baseUrl) {
     const error = new Error('AI service URL is not configured');
@@ -19,7 +19,12 @@ const askGroundedChat = async (query) => {
 
   const response = await axios.post(
     `${baseUrl}/chat`,
-    { query },
+    {
+      query,
+      history: Array.isArray(context.history) ? context.history : [],
+      ...(context.liveContext ? { live_context: context.liveContext } : {}),
+      ...(context.userContext ? { user_context: context.userContext } : {}),
+    },
     {
       headers,
       timeout: clampTimeout(process.env.AI_CHAT_TIMEOUT_MS),
