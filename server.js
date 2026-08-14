@@ -38,6 +38,7 @@ const fanRoutes      = require('./routes/fan.routes');
 const couponRoutes   = require('./routes/coupon.routes');
 const uploadRoutes   = require('./routes/upload.routes');
 const aiStudioRoutes = require('./routes/aiStudio.routes');
+const highlightRoutes = require('./routes/highlight.routes');
 
 /* ── Connect DB ── */
 connectDB();
@@ -116,6 +117,7 @@ app.use(`${API}/fan`,      fanRoutes);
 app.use(`${API}/coupons`,  couponRoutes);
 app.use(`${API}/uploads`,  uploadRoutes);
 app.use(`${API}/ai-studio`, aiStudioRoutes);
+app.use(`${API}/highlights`, highlightRoutes);
 
 /* ── 404 Handler ── */
 app.use((req, res) => {

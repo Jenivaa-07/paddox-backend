@@ -17,6 +17,13 @@ const sessionSchema = new mongoose.Schema({
   revoked  : { type:Boolean, default:false }
 }, { _id:false });
 
+const highlightActivitySchema = new mongoose.Schema({
+  videoId: { type:String, required:true, trim:true },
+  event  : { type:String, enum:['impression','play','like','complete','dismiss'], required:true },
+  count  : { type:Number, default:1, min:1 },
+  lastAt : { type:Date, default:Date.now }
+}, { _id:false });
+
 const userSchema = new mongoose.Schema({
   firstName    : { type:String, required:[true,'First name required'], trim:true, maxlength:50 },
   lastName     : { type:String, trim:true, maxlength:50 },
@@ -43,6 +50,7 @@ const userSchema = new mongoose.Schema({
     fanPoints    : { type:Boolean, default:false },
     community    : { type:Boolean, default:false },
   },
+  highlightActivity: { type:[highlightActivitySchema], default:[] },
   security: {
     twoFactor: {
       enabled: { type:Boolean, default:false },
