@@ -33,4 +33,13 @@ const uploadLimiter = rateLimit({
   message : { success:false, message:'Upload limit exceeded. Try again later.' },
 });
 
-module.exports = { authLimiter, paymentLimiter, f1Limiter, uploadLimiter };
+/* Grounded chat limiter — protects the AI service from prompt flooding */
+const chatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success:false, message:'AI Pit Wall rate limit reached. Try again in a minute.' },
+});
+
+module.exports = { authLimiter, paymentLimiter, f1Limiter, uploadLimiter, chatLimiter };
