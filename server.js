@@ -22,6 +22,7 @@ dotenv.config({ path: path.resolve(__dirname, envFile) });
 const connectDB  = require('./config/db');
 const { initSocket } = require('./config/socket');
 const errorMiddleware = require('./middleware/error.middleware');
+const { syncUserCollectibles } = require('./controllers/collection.controller');
 
 /* ── Routes ── */
 const authRoutes       = require('./routes/auth.routes');
@@ -102,6 +103,41 @@ app.get('/health', (req, res) => {
     env     : process.env.NODE_ENV,
     time    : new Date().toISOString(),
   });
+});
+
+/* ── Real-time collectible sync hook ──
+   These routes already mutate real PADDOX activity (FanPoints, orders or
+   downloads). After a successful response, res.finish sees the authenticated
+   req.user attached by the route's protect/optionalAuth middleware and syncs
+   achievement unlocks without adding latency to the user-facing response. */
+app.use((req, res, next) => {
+  const requestPath = String(req.path || '');
+  const method = String(req.method || 'GET').toUpperCase();
+
+  const fanActivity = method === 'POST' && (
+    requestPath === '/api/fan/poll/vote' ||
+    requestPath === '/api/fan/trivia/answer' ||
+    requestPath.startsWith('/api/fan/feed')
+  );
+  const assetActivity = (
+    ['GET','POST'].includes(method) && /^\/api\/assets\/(?:download\/[^/]+|[^/]+\/download)$/.test(requestPath)
+  ) || (
+    method === 'POST' && /^\/api\/assets\/[^/]+\/purchase$/.test(requestPath)
+  );
+  const orderActivity = method === 'POST' && requestPath === '/api/orders';
+
+  if (!(fanActivity || assetActivity || orderActivity)) return next();
+
+  res.on('finish', () => {
+    if (res.statusCode < 200 || res.statusCode >= 300 || !req.user?._id) return;
+    setImmediate(() => {
+      syncUserCollectibles(req.user._id).catch(err => {
+        console.error('PADDOX collectible post-action sync failed:', err.message);
+      });
+    });
+  });
+
+  next();
 });
 
 /* ── API Routes ── */
