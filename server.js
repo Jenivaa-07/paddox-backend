@@ -24,22 +24,24 @@ const { initSocket } = require('./config/socket');
 const errorMiddleware = require('./middleware/error.middleware');
 
 /* ── Routes ── */
-const authRoutes     = require('./routes/auth.routes');
-const userRoutes     = require('./routes/user.routes');
-const productRoutes  = require('./routes/product.routes');
-const orderRoutes    = require('./routes/order.routes');
-const cartRoutes     = require('./routes/cart.routes');
-const wishlistRoutes = require('./routes/wishlist.routes');
-const paymentRoutes  = require('./routes/payment.routes');
-const f1Routes       = require('./routes/f1.routes');
-const assetRoutes    = require('./routes/asset.routes');
-const adminRoutes    = require('./routes/admin.routes');
-const fanRoutes      = require('./routes/fan.routes');
-const couponRoutes   = require('./routes/coupon.routes');
-const uploadRoutes   = require('./routes/upload.routes');
-const aiStudioRoutes = require('./routes/aiStudio.routes');
-const highlightRoutes = require('./routes/highlight.routes');
-const chatRoutes      = require('./routes/chat.routes');
+const authRoutes       = require('./routes/auth.routes');
+const userRoutes       = require('./routes/user.routes');
+const productRoutes    = require('./routes/product.routes');
+const orderRoutes      = require('./routes/order.routes');
+const cartRoutes       = require('./routes/cart.routes');
+const wishlistRoutes   = require('./routes/wishlist.routes');
+const paymentRoutes    = require('./routes/payment.routes');
+const f1Routes         = require('./routes/f1.routes');
+const assetRoutes      = require('./routes/asset.routes');
+const adminRoutes      = require('./routes/admin.routes');
+const fanRoutes        = require('./routes/fan.routes');
+const couponRoutes     = require('./routes/coupon.routes');
+const uploadRoutes     = require('./routes/upload.routes');
+const aiStudioRoutes   = require('./routes/aiStudio.routes');
+const highlightRoutes  = require('./routes/highlight.routes');
+const chatRoutes       = require('./routes/chat.routes');
+const fantasyRoutes    = require('./routes/fantasy.routes');
+const collectionRoutes = require('./routes/collection.routes');
 
 /* ── Connect DB ── */
 connectDB();
@@ -52,7 +54,7 @@ initSocket(server);
 
 /* ── Global Rate Limiter ── */
 const globalLimiter = rateLimit({
-  windowMs : 15 * 60 * 1000,  // 15 minutes
+  windowMs : 15 * 60 * 1000,
   max      : 200,
   message  : { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
@@ -104,22 +106,24 @@ app.get('/health', (req, res) => {
 
 /* ── API Routes ── */
 const API = '/api';
-app.use(`${API}/auth`,     authRoutes);
-app.use(`${API}/users`,    userRoutes);
-app.use(`${API}/products`, productRoutes);
-app.use(`${API}/orders`,   orderRoutes);
-app.use(`${API}/cart`,     cartRoutes);
-app.use(`${API}/wishlist`, wishlistRoutes);
-app.use(`${API}/payments`, paymentRoutes);
-app.use(`${API}/f1`,       f1Routes);
-app.use(`${API}/assets`,   assetRoutes);
-app.use(`${API}/admin`,    adminRoutes);
-app.use(`${API}/fan`,      fanRoutes);
-app.use(`${API}/coupons`,  couponRoutes);
-app.use(`${API}/uploads`,  uploadRoutes);
-app.use(`${API}/ai-studio`, aiStudioRoutes);
+app.use(`${API}/auth`,       authRoutes);
+app.use(`${API}/users`,      userRoutes);
+app.use(`${API}/products`,   productRoutes);
+app.use(`${API}/orders`,     orderRoutes);
+app.use(`${API}/cart`,       cartRoutes);
+app.use(`${API}/wishlist`,   wishlistRoutes);
+app.use(`${API}/payments`,   paymentRoutes);
+app.use(`${API}/f1`,         f1Routes);
+app.use(`${API}/assets`,     assetRoutes);
+app.use(`${API}/admin`,      adminRoutes);
+app.use(`${API}/fan`,        fanRoutes);
+app.use(`${API}/coupons`,    couponRoutes);
+app.use(`${API}/uploads`,    uploadRoutes);
+app.use(`${API}/ai-studio`,  aiStudioRoutes);
 app.use(`${API}/highlights`, highlightRoutes);
 app.use(`${API}/chat`,       chatRoutes);
+app.use(`${API}/fantasy`,    fantasyRoutes);
+app.use(`${API}/collection`, collectionRoutes);
 
 /* ── 404 Handler ── */
 app.use((req, res) => {
