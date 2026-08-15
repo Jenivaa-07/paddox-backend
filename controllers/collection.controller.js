@@ -109,8 +109,16 @@ async function buildActivityState(userId) {
   const firstAction = {};
   const latestAction = {};
   logs.forEach(log => {
-    const action = String(log.action || '');
+    let action = String(log.action || '');
     if (!action) return;
+
+    /* Older Fan Hub builds recorded comment points using action=fan_post with
+       meta.source=fan_comment. Keep those separate so a comment cannot unlock
+       the "publish your first post" Grid Voice achievement. */
+    if (action === 'fan_post' && String(log.meta?.source || '') === 'fan_comment') {
+      action = 'fan_comment';
+    }
+
     counts[action] = (counts[action] || 0) + 1;
     if (!firstAction[action]) firstAction[action] = log;
     latestAction[action] = log;
