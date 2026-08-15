@@ -6,8 +6,10 @@
 const express = require('express');
 const router = express.Router();
 const fan = require('../controllers/fan.controller');
+const communityChat = require('../controllers/communityChat.controller');
 const FanPost = require('../models/FanPost');
 const { protect, optionalAuth, adminOnly } = require('../middleware/auth.middleware');
+const { communityChatLimiter } = require('../middleware/rateLimit.middleware');
 
 /* Public / user Fan Hub */
 router.get('/poll', fan.getPoll);
@@ -21,6 +23,13 @@ router.post('/feed/:id/like', protect, fan.toggleFeedLike);
 router.post('/feed/:id/comments', protect, fan.addFeedComment);
 router.delete('/feed/:id/comments/:commentId', protect, fan.deleteFeedComment);
 router.delete('/feed/:id', protect, fan.deleteFeedPost);
+
+/* Live Grid Chat — public history, authenticated participation. */
+router.get('/chat/messages', optionalAuth, communityChat.getMessages);
+router.post('/chat/messages', communityChatLimiter, protect, communityChat.sendMessage);
+router.post('/chat/messages/:id/reactions', communityChatLimiter, protect, communityChat.toggleReaction);
+router.post('/chat/messages/:id/report', communityChatLimiter, protect, communityChat.reportMessage);
+router.delete('/chat/messages/:id', protect, communityChat.deleteMessage);
 
 /* Phase A4.9B.2 — Admin Moderation exact feed source
    Returns approved, flagged, and unapproved Fan Hub posts with comments so the
