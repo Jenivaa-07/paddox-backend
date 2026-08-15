@@ -5,7 +5,7 @@ const {
   getRaceResults,
   getQualifying
 } = require('../utils/f1Api');
-const { predictFantasy } = require('../services/aiClient.service');
+const { predictFantasy, warmAIService } = require('../services/aiClient.service');
 
 const CACHE_TTL_MS = 90 * 1000;
 let cache = { ts: 0, data: null };
@@ -116,6 +116,12 @@ function buildInputQuality(qualifying) {
 
 async function buildPrediction() {
   const year = getCurrentYear();
+
+  /* Start waking paddox-ai immediately. This runs in parallel with the F1 data
+     requests and feature engineering, so a Render cold start no longer begins
+     only after all Jolpica work has already completed. */
+  const aiWarmupPromise = warmAIService().catch(() => ({ reachable: false }));
+
   const [nextRaceResponse, standingsResponse] = await Promise.all([
     getNextRace(),
     getDriverStandings(year)
@@ -162,6 +168,10 @@ async function buildPrediction() {
     };
   });
 
+  /* By now the health request has had the whole F1 feature-building window to
+     wake Render. Await it only to settle; a failed/timed-out warm-up does not
+     block the real inference request, which has its own longer timeout. */
+  const aiWarmup = await aiWarmupPromise;
   const ai = await predictFantasy({ drivers: featureRows });
   const predictionMap = new Map((ai?.predictions || []).map(row => [String(row.driver_id), row]));
 
@@ -223,6 +233,7 @@ async function buildPrediction() {
     lineup: predictions.slice(0, 5),
     predictions,
     generatedAt: new Date().toISOString(),
+    aiWarmup,
     sources: ['Jolpica/Ergast season + qualifying + race results', 'PADDOX trained Random Forest artifact']
   };
 }
@@ -239,11 +250,25 @@ exports.getNextRacePrediction = async (req, res, next) => {
     return res.json({ success: true, data: { ...data, cached: false } });
   } catch (err) {
     const status = Number(err.statusCode || err.response?.status || 500);
+    const isTimeout = ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(String(err.code || ''));
+
+    if (isTimeout) {
+      return res.status(503).json({
+        success: false,
+        message: 'PADDOX AI is still warming up. Retrying shortly usually resolves this.',
+        detail: err.message,
+        code: 'AI_WARMING_UP'
+      });
+    }
+
     if (status === 503 || err.code === 'AI_SERVICE_NOT_CONFIGURED') {
       return res.status(503).json({
         success: false,
         message: 'Fantasy ML service is not ready yet.',
-        detail: err.message
+        detail: err.response?.data?.status === 'model_not_ready'
+          ? 'The trained Random Forest artifact has not finished loading in paddox-ai.'
+          : err.message,
+        code: err.response?.data?.status === 'model_not_ready' ? 'MODEL_NOT_READY' : 'AI_NOT_READY'
       });
     }
     if (status === 404) {
