@@ -6,6 +6,7 @@
 const { Server } = require('socket.io');
 const jwt        = require('jsonwebtoken');
 const User       = require('../models/User');
+const { registerCommunityChatSocket } = require('../sockets/communityChat.socket');
 
 let io;
 
@@ -20,15 +21,27 @@ async function isAdminSocket(socket) {
   }
 }
 
+function socketCookie(header = '', name = '') {
+  const parts = String(header || '').split(';');
+  for (const part of parts) {
+    const index = part.indexOf('=');
+    if (index < 0) continue;
+    const key = part.slice(0, index).trim();
+    if (key !== name) continue;
+    try { return decodeURIComponent(part.slice(index + 1).trim()); }
+    catch { return part.slice(index + 1).trim(); }
+  }
+  return '';
+}
 
 const initSocket = (server) => {
   io = new Server(server, {
     cors: {
       origin: [
-  'http://127.0.0.1:5500',
-  'http://localhost:5500',
-  'https://paddox.vercel.app'
-],
+        'http://127.0.0.1:5500',
+        'http://localhost:5500',
+        'https://paddox.vercel.app'
+      ],
       methods    : ['GET','POST'],
       credentials: true,
     },
@@ -37,20 +50,39 @@ const initSocket = (server) => {
   });
 
   /* ── Auth middleware for socket ── */
-  io.use((socket, next) => {
-    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+  io.use(async (socket, next) => {
+    const token =
+      socket.handshake.auth?.token ||
+      socket.handshake.query?.token ||
+      socketCookie(socket.request?.headers?.cookie, 'accessToken');
+
     if (!token) {
-      /* Allow unauthenticated for public feed */
+      /* Public socket access remains available for feed/chat viewing. */
       socket.user = null;
       return next();
     }
+
     try {
       const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
-      socket.user   = decoded;
-      next();
+      const user = await User.findById(decoded.id)
+        .select('firstName lastName avatar role fanTier isBanned');
+
+      if (!user || user.isBanned) {
+        socket.user = null;
+        return next();
+      }
+
+      socket.user = {
+        id:String(user._id),
+        role:user.role,
+        name:`${user.firstName || ''} ${user.lastName || ''}`.trim() || 'PADDOX Fan',
+        avatar:user.avatar?.url || '',
+        fanTier:user.fanTier || 'Regular'
+      };
+      return next();
     } catch {
       socket.user = null;
-      next();
+      return next();
     }
   });
 
@@ -63,6 +95,8 @@ const initSocket = (server) => {
       socket.join(`user:${socket.user.id}`);
     }
 
+    /* Fan Hub Live Grid chat: presence + typing */
+    registerCommunityChatSocket(io, socket);
 
     /* ── Admin notification relays ── */
     socket.on('admin:new-drop', async (payload = {}) => {
@@ -114,12 +148,11 @@ const initSocket = (server) => {
       }
       const post = {
         user    : socket.user.name || 'Fan',
-        text    : data.text?.slice(0, 280), // max 280 chars
+        text    : data.text?.slice(0, 280),
         time    : 'Just now',
         userId  : socket.user.id,
         avatar  : socket.user.avatar || '👤',
       };
-      /* Broadcast to all connected clients */
       io.emit('fan:new-post', post);
     });
 
