@@ -42,4 +42,20 @@ const chatLimiter = rateLimit({
   message: { success:false, message:'AI Pit Wall rate limit reached. Try again in a minute.' },
 });
 
-module.exports = { authLimiter, paymentLimiter, f1Limiter, uploadLimiter, chatLimiter };
+/* Fan Hub Live Grid Chat — prevents rapid message/reaction spam. */
+const communityChatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 35,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success:false, message:'Live Grid chat is moving fast. Slow down for a moment.' },
+});
+
+module.exports = {
+  authLimiter,
+  paymentLimiter,
+  f1Limiter,
+  uploadLimiter,
+  chatLimiter,
+  communityChatLimiter
+};
