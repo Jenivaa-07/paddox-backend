@@ -22,6 +22,30 @@ const requireAIServiceUrl = () => {
   return baseUrl;
 };
 
+const warmAIService = async () => {
+  const baseUrl = requireAIServiceUrl();
+  try {
+    const response = await axios.get(`${baseUrl}/health`, {
+      timeout: clampTimeout(process.env.AI_WARMUP_TIMEOUT_MS || 15000),
+      maxContentLength: 256 * 1024,
+      validateStatus: (status) => status >= 200 && status < 500,
+    });
+    return {
+      reachable: response.status >= 200 && response.status < 500,
+      status: response.status
+    };
+  } catch (error) {
+    /* A timeout here is expected on a sleeping/cold Render instance. The health
+       request still wakes the service, so callers should continue and let the
+       real inference request use its longer timeout. */
+    return {
+      reachable: false,
+      status: Number(error.response?.status || 0),
+      code: error.code || 'AI_WARMUP_FAILED'
+    };
+  }
+};
+
 const askGroundedChat = async (query, context = {}) => {
   const baseUrl = requireAIServiceUrl();
 
@@ -51,7 +75,7 @@ const predictFantasy = async (payload = {}) => {
     payload,
     {
       headers: getAIHeaders(),
-      timeout: clampTimeout(process.env.AI_FANTASY_TIMEOUT_MS || 30000),
+      timeout: clampTimeout(process.env.AI_FANTASY_TIMEOUT_MS || 45000),
       maxContentLength: 1024 * 1024,
       validateStatus: (status) => status >= 200 && status < 300,
     }
@@ -62,6 +86,7 @@ const predictFantasy = async (payload = {}) => {
 module.exports = {
   askGroundedChat,
   predictFantasy,
+  warmAIService,
   getAIServiceUrl,
   clampTimeout
 };
