@@ -4,6 +4,7 @@
 const express = require('express');
 const router  = express.Router();
 const f1      = require('../controllers/f1.controller');
+const f1Career = require('../controllers/f1Career.controller');
 const { protect, adminOnly } = require('../middleware/auth.middleware');
 const { f1Limiter } = require('../middleware/rateLimit.middleware');
 
@@ -16,6 +17,7 @@ router.get('/standings/constructors', f1.getConstructorStandings);
 router.get('/results/:round',         f1.getRaceResults);
 router.get('/last-result',            f1.getLastResult);
 router.get('/drivers/all',            f1.getAllDrivers);
+router.get('/drivers/:identifier/career', f1Career.getDriverCareer);
 router.get('/sessions',               f1.getSessions);
 router.get('/live',                   f1.getLiveSession);
 router.get('/pitwall/weekend',        f1.getPitWallWeekend);
