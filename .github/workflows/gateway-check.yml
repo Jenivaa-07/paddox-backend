@@ -1,0 +1,29 @@
+name: PADDOX backend gateway check
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+      - name: Syntax check prediction gateway
+        run: |
+          node --check services/aiClient.service.js
+          node --check controllers/racePrediction.controller.js
+          node --check routes/f1.routes.js
+      - name: Module load check
+        run: |
+          node - <<'NODE'
+          require('./services/aiClient.service');
+          require('./controllers/racePrediction.controller');
+          require('./routes/f1.routes');
+          console.log('PADDOX race prediction gateway modules loaded successfully');
+          NODE
