@@ -35,9 +35,6 @@ const warmAIService = async () => {
       status: response.status
     };
   } catch (error) {
-    /* A timeout here is expected on a sleeping/cold Render instance. The health
-       request still wakes the service, so callers should continue and let the
-       real inference request use its longer timeout. */
     return {
       reachable: false,
       status: Number(error.response?.status || 0),
@@ -48,7 +45,6 @@ const warmAIService = async () => {
 
 const askGroundedChat = async (query, context = {}) => {
   const baseUrl = requireAIServiceUrl();
-
   const response = await axios.post(
     `${baseUrl}/chat`,
     {
@@ -64,7 +60,6 @@ const askGroundedChat = async (query, context = {}) => {
       validateStatus: (status) => status >= 200 && status < 300,
     }
   );
-
   return response.data;
 };
 
@@ -83,9 +78,25 @@ const predictFantasy = async (payload = {}) => {
   return response.data;
 };
 
+const predictRace = async (payload = {}) => {
+  const baseUrl = requireAIServiceUrl();
+  const response = await axios.post(
+    `${baseUrl}/predict-race`,
+    payload,
+    {
+      headers: getAIHeaders(),
+      timeout: clampTimeout(process.env.AI_RACE_TIMEOUT_MS || 45000),
+      maxContentLength: 512 * 1024,
+      validateStatus: (status) => status >= 200 && status < 300,
+    }
+  );
+  return response.data;
+};
+
 module.exports = {
   askGroundedChat,
   predictFantasy,
+  predictRace,
   warmAIService,
   getAIServiceUrl,
   clampTimeout
