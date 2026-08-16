@@ -11,6 +11,7 @@ const multer = require('multer');
 const router = express.Router();
 
 const productController = require('../controllers/product.controller') || {};
+const productAdminController = require('../controllers/product-admin.controller') || {};
 const authMiddleware = require('../middleware/auth.middleware') || {};
 
 const protect =
@@ -63,6 +64,16 @@ const productImages = productUpload.array('images', 10);
 
 /* Public product routes */
 router.get('/', h('getProducts'));
+
+/* Dedicated protected Admin catalogue — keep ABOVE /:id */
+router.get(
+  '/admin/all',
+  protect,
+  adminOnly,
+  typeof productAdminController.getAdminProducts === 'function'
+    ? productAdminController.getAdminProducts
+    : missingHandler('getAdminProducts')
+);
 
 /* Admin stock/inventory helpers — keep ABOVE /:id routes */
 router.post('/admin/restock-low', protect, adminOnly, h('bulkRestockLowStock', productController.restockLowStock));
