@@ -50,6 +50,63 @@ async function rollingFinishMap(year, round) {
   return averages;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, Number(value)));
+}
+
+function lapValue(row) {
+  const values = [row.bestSec, row.lastSec]
+    .map(Number)
+    .filter(value => Number.isFinite(value) && value > 30 && value < 300);
+  if (!values.length) return null;
+  return Math.min(...values);
+}
+
+function buildPaceRanks(rows) {
+  const timed = rows
+    .map(row => ({ code: row.code, lap: lapValue(row) }))
+    .filter(item => Number.isFinite(item.lap))
+    .sort((a, b) => a.lap - b.lap);
+
+  const rank = new Map();
+  timed.forEach((item, index) => rank.set(item.code, index + 1));
+  return rank;
+}
+
+function raceFormFallback(row, rollingAvg, fieldSize, paceRanks) {
+  const current = clamp(row.position, 1, fieldSize);
+  const rolling = clamp(rollingAvg || current, 1, fieldSize);
+  const paceRank = paceRanks.get(row.code);
+  const hasPace = Number.isFinite(paceRank);
+
+  /* This fallback is deliberately transparent and real-data-only. It blends the
+     currently visible order with the driver's recent finishing form and, when
+     the selected session exposes usable lap timing, the driver's pace rank. */
+  const expected = hasPace
+    ? (0.42 * current) + (0.33 * rolling) + (0.25 * clamp(paceRank, 1, fieldSize))
+    : (0.58 * current) + (0.42 * rolling);
+
+  const expectedFinishPosition = clamp(Number(expected.toFixed(2)), 1, fieldSize);
+  const top10Probability = clamp(
+    1 / (1 + Math.exp((expectedFinishPosition - 10.5) / 2.15)),
+    0.02,
+    0.98
+  );
+
+  return {
+    expected_finish_position: expectedFinishPosition,
+    top10_probability: Number(top10Probability.toFixed(4)),
+    is_top10: top10Probability >= 0.5,
+    model_version: 'race-form-v1',
+    inference_latency_ms: 0,
+    request_id: '',
+    data_as_of: new Date().toISOString(),
+    fallback: true,
+    fallback_reason: 'primary_lstm_unavailable',
+    pace_rank_used: hasPace ? paceRank : null,
+  };
+}
+
 async function mapWithConcurrency(items, concurrency, worker) {
   const output = new Array(items.length);
   let cursor = 0;
@@ -75,8 +132,6 @@ exports.predictPitWallSession = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'No real timing rows were supplied for prediction.' });
     }
 
-    /* Rank currently visible drivers and cap inference fan-out. This protects the
-       CPU model from a 20-request burst while still covering the competitive field. */
     const selected = [...rows]
       .sort((a, b) => a.position - b.position)
       .slice(0, MAX_DRIVERS);
@@ -86,18 +141,30 @@ exports.predictPitWallSession = async (req, res, next) => {
       warmAIService().catch(() => ({ reachable: false }))
     ]);
 
+    const paceRanks = buildPaceRanks(selected);
+
     const settled = await mapWithConcurrency(selected, 3, async row => {
       const recentLaps = [row.bestSec, row.lastSec]
         .filter(value => Number.isFinite(value) && value > 30 && value < 300);
       const rollingAvg = rollingMap.get(row.code) || row.position;
-      const prediction = await predictRace({
-        recent_laps: recentLaps,
-        features: {
-          grid_position: row.position,
-          rolling_avg_finish: Number(rollingAvg.toFixed(3)),
-          field_size: Math.max(rows.length, 2),
-        }
-      });
+      let prediction = null;
+      let source = 'lstm';
+      let primaryError = '';
+
+      try {
+        prediction = await predictRace({
+          recent_laps: recentLaps,
+          features: {
+            grid_position: row.position,
+            rolling_avg_finish: Number(rollingAvg.toFixed(3)),
+            field_size: Math.max(rows.length, 2),
+          }
+        });
+      } catch (error) {
+        source = 'race_form_fallback';
+        primaryError = error?.response?.data?.status || error?.code || error?.message || 'lstm_unavailable';
+        prediction = raceFormFallback(row, rollingAvg, Math.max(rows.length, 2), paceRanks);
+      }
 
       return {
         code: row.code,
@@ -114,6 +181,9 @@ exports.predictPitWallSession = async (req, res, next) => {
         inferenceLatencyMs: Number(prediction.inference_latency_ms || 0),
         requestId: prediction.request_id || '',
         dataAsOf: prediction.data_as_of || '',
+        inferenceSource: source,
+        primaryError,
+        paceRankUsed: prediction.pace_rank_used ?? paceRanks.get(row.code) ?? null,
       };
     });
 
@@ -123,16 +193,17 @@ exports.predictPitWallSession = async (req, res, next) => {
       .sort((a, b) => a.expectedFinishPosition - b.expectedFinishPosition);
 
     if (!predictions.length) {
-      const firstError = settled.find(result => result?.status === 'rejected')?.reason;
-      const status = Number(firstError?.response?.status || 503);
-      return res.status(status === 400 ? 400 : 503).json({
+      return res.status(503).json({
         success: false,
-        code: firstError?.response?.data?.status === 'model_not_ready' ? 'MODEL_NOT_READY' : 'AI_NOT_READY',
-        message: firstError?.response?.data?.status === 'model_not_ready'
-          ? 'The PADDOX LSTM race model is still loading.'
-          : 'The PADDOX race prediction service is temporarily unavailable.'
+        code: 'PREDICTION_UNAVAILABLE',
+        message: 'PADDOX could not generate a prediction from the selected session.'
       });
     }
+
+    const fallbackCount = predictions.filter(row => row.inferenceSource === 'race_form_fallback').length;
+    const primaryCount = predictions.length - fallbackCount;
+    const mode = fallbackCount === 0 ? 'lstm' : primaryCount === 0 ? 'race_form_fallback' : 'hybrid';
+    const timedDrivers = paceRanks.size;
 
     return res.json({
       success: true,
@@ -140,17 +211,33 @@ exports.predictPitWallSession = async (req, res, next) => {
         year,
         round,
         session,
-        coverage: { predicted: predictions.length, timingRows: rows.length, cap: MAX_DRIVERS },
+        coverage: {
+          predicted: predictions.length,
+          timingRows: rows.length,
+          cap: MAX_DRIVERS,
+          primaryModelPredictions: primaryCount,
+          fallbackPredictions: fallbackCount,
+        },
         inputQuality: {
-          mode: 'partial_live_session',
-          confidence: 'medium',
+          mode: timedDrivers ? 'partial_live_session_with_pace' : 'session_order_plus_recent_form',
+          confidence: timedDrivers >= 5 ? 'medium' : 'guarded',
           recentLapSamplesPerDriver: 'up to 2 from the currently exposed Pit Wall timing row',
           rollingFinishWindow: RECENT_ROUNDS,
-          note: 'Predictions use real selected-session best/latest lap times plus real recent race finishing averages. The LSTM pads the sequence to its trained 10-lap length when fewer lap samples are available.'
+          timedDrivers,
+          note: timedDrivers
+            ? 'Predictions use selected-session order, available lap timing and recent real race finishing averages.'
+            : 'This session currently exposes driver order but not usable lap timing. PADDOX therefore uses the live order plus recent real race finishing averages until lap timing arrives.'
         },
         model: {
-          algorithm: 'LSTM race outcome predictor',
-          version: predictions[0]?.modelVersion || 'unknown'
+          algorithm: mode === 'lstm'
+            ? 'LSTM race outcome predictor'
+            : mode === 'hybrid'
+              ? 'PADDOX hybrid race intelligence'
+              : 'PADDOX race-form fallback predictor',
+          version: mode === 'lstm' ? (predictions[0]?.modelVersion || 'unknown') : 'race-form-v1',
+          mode,
+          primaryAvailable: primaryCount > 0,
+          fallbackActive: fallbackCount > 0,
         },
         predictions,
         warmup,
@@ -158,9 +245,6 @@ exports.predictPitWallSession = async (req, res, next) => {
       }
     });
   } catch (err) {
-    if (err.code === 'AI_SERVICE_NOT_CONFIGURED') {
-      return res.status(503).json({ success: false, code: 'AI_NOT_CONFIGURED', message: 'PADDOX AI service is not configured.' });
-    }
     next(err);
   }
 };
