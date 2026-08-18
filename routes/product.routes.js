@@ -13,6 +13,7 @@ const router = express.Router();
 const productController = require('../controllers/product.controller') || {};
 const productAdminController = require('../controllers/product-admin.controller') || {};
 const authMiddleware = require('../middleware/auth.middleware') || {};
+const { importRemoteProductImages } = require('../middleware/productRemoteImages.middleware');
 
 const protect =
   typeof authMiddleware.protect === 'function'
@@ -92,8 +93,8 @@ router.post('/:id/reviews', protect, h('addReview'));
 router.get('/:id', h('getProduct'));
 
 /* Create / update / delete — admin only */
-router.post('/', protect, adminOnly, productImages, h('createProduct'));
-router.put('/:id', protect, adminOnly, productImages, h('updateProduct'));
+router.post('/', protect, adminOnly, productImages, importRemoteProductImages, h('createProduct'));
+router.put('/:id', protect, adminOnly, productImages, importRemoteProductImages, h('updateProduct'));
 router.delete('/:id', protect, adminOnly, h('deleteProduct'));
 
 module.exports = router;
