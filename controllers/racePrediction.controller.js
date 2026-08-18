@@ -79,9 +79,6 @@ function raceFormFallback(row, rollingAvg, fieldSize, paceRanks) {
   const paceRank = paceRanks.get(row.code);
   const hasPace = Number.isFinite(paceRank);
 
-  /* This fallback is deliberately transparent and real-data-only. It blends the
-     currently visible order with the driver's recent finishing form and, when
-     the selected session exposes usable lap timing, the driver's pace rank. */
   const expected = hasPace
     ? (0.42 * current) + (0.33 * rolling) + (0.25 * clamp(paceRank, 1, fieldSize))
     : (0.58 * current) + (0.42 * rolling);
@@ -101,9 +98,23 @@ function raceFormFallback(row, rollingAvg, fieldSize, paceRanks) {
     inference_latency_ms: 0,
     request_id: '',
     data_as_of: new Date().toISOString(),
-    fallback: true,
-    fallback_reason: 'primary_lstm_unavailable',
     pace_rank_used: hasPace ? paceRank : null,
+  };
+}
+
+function predictionPayload(row, rollingAvg, fieldSize) {
+  const recentLaps = [row.bestSec, row.lastSec]
+    .filter(value => Number.isFinite(value) && value > 30 && value < 300);
+  return {
+    recentLaps,
+    payload: {
+      recent_laps: recentLaps,
+      features: {
+        grid_position: row.position,
+        rolling_avg_finish: Number(rollingAvg.toFixed(3)),
+        field_size: fieldSize,
+      }
+    }
   };
 }
 
@@ -141,29 +152,52 @@ exports.predictPitWallSession = async (req, res, next) => {
       warmAIService().catch(() => ({ reachable: false }))
     ]);
 
+    const fieldSize = Math.max(rows.length, 2);
     const paceRanks = buildPaceRanks(selected);
 
-    const settled = await mapWithConcurrency(selected, 3, async row => {
-      const recentLaps = [row.bestSec, row.lastSec]
-        .filter(value => Number.isFinite(value) && value > 30 && value < 300);
+    /* Probe the primary model once before fan-out. When Render is healthy but the
+       LSTM artifact is unavailable, /health can still return 200. This probe
+       prevents ten repeated 503 calls and switches the whole request immediately
+       to the transparent real-data race-form predictor. */
+    const firstRow = selected[0];
+    const firstRolling = rollingMap.get(firstRow.code) || firstRow.position;
+    const firstInput = predictionPayload(firstRow, firstRolling, fieldSize);
+    let primaryGate = { available: false, prediction: null, error: '' };
+    try {
+      primaryGate = {
+        available: true,
+        prediction: await predictRace(firstInput.payload),
+        error: ''
+      };
+    } catch (error) {
+      primaryGate = {
+        available: false,
+        prediction: null,
+        error: error?.response?.data?.status || error?.code || error?.message || 'lstm_unavailable'
+      };
+    }
+
+    const settled = await mapWithConcurrency(selected, 3, async (row, index) => {
       const rollingAvg = rollingMap.get(row.code) || row.position;
+      const input = predictionPayload(row, rollingAvg, fieldSize);
       let prediction = null;
       let source = 'lstm';
       let primaryError = '';
 
-      try {
-        prediction = await predictRace({
-          recent_laps: recentLaps,
-          features: {
-            grid_position: row.position,
-            rolling_avg_finish: Number(rollingAvg.toFixed(3)),
-            field_size: Math.max(rows.length, 2),
-          }
-        });
-      } catch (error) {
+      if (!primaryGate.available) {
         source = 'race_form_fallback';
-        primaryError = error?.response?.data?.status || error?.code || error?.message || 'lstm_unavailable';
-        prediction = raceFormFallback(row, rollingAvg, Math.max(rows.length, 2), paceRanks);
+        primaryError = primaryGate.error;
+        prediction = raceFormFallback(row, rollingAvg, fieldSize, paceRanks);
+      } else if (index === 0) {
+        prediction = primaryGate.prediction;
+      } else {
+        try {
+          prediction = await predictRace(input.payload);
+        } catch (error) {
+          source = 'race_form_fallback';
+          primaryError = error?.response?.data?.status || error?.code || error?.message || 'lstm_unavailable';
+          prediction = raceFormFallback(row, rollingAvg, fieldSize, paceRanks);
+        }
       }
 
       return {
@@ -172,7 +206,7 @@ exports.predictPitWallSession = async (req, res, next) => {
         team: row.team,
         currentPosition: row.position,
         lapsAvailable: row.laps,
-        recentLapSamplesUsed: recentLaps.length,
+        recentLapSamplesUsed: input.recentLaps.length,
         rollingAvgFinish: Number(rollingAvg.toFixed(2)),
         expectedFinishPosition: Number(prediction.expected_finish_position),
         top10Probability: Number(prediction.top10_probability),
