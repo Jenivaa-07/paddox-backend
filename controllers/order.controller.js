@@ -315,9 +315,10 @@ exports.placeOrder = async (req, res) => {
 
     const allowedPaymentMethods = ['upi', 'card', 'netbanking', 'wallet', 'cod'];
     const requestedPaymentMethod = String(paymentMethod || 'upi').toLowerCase();
-    const normalisedPaymentMethod = allowedPaymentMethods.includes(requestedPaymentMethod)
-      ? requestedPaymentMethod
-      : 'upi';
+    if (!allowedPaymentMethods.includes(requestedPaymentMethod)) {
+      return errorResponse(res, 400, 'Unsupported demo checkout payment method');
+    }
+    const normalisedPaymentMethod = requestedPaymentMethod;
 
     const order = await Order.create({
       user: req.user._id,
