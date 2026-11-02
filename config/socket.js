@@ -1,37 +1,28 @@
-
 /* ============================================================
-   FILE: config/socket.js  —  WebSocket (Socket.io) Setup
+   PADDOX Socket.IO — authenticated, allow-listed realtime events
    ============================================================ */
-// config/socket.js
 const { Server } = require('socket.io');
-const jwt        = require('jsonwebtoken');
-const User       = require('../models/User');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
 const { registerCommunityChatSocket } = require('../sockets/communityChat.socket');
 
 let io;
 
-async function isAdminSocket(socket) {
-  try {
-    if (!socket.user?.id) return false;
-    if (socket.user?.role === 'admin') return true;
-    const user = await User.findById(socket.user.id).select('role');
-    return user?.role === 'admin';
-  } catch {
-    return false;
-  }
-}
-
 function socketCookie(header = '', name = '') {
-  const parts = String(header || '').split(';');
-  for (const part of parts) {
+  for (const part of String(header || '').split(';')) {
     const index = part.indexOf('=');
-    if (index < 0) continue;
-    const key = part.slice(0, index).trim();
-    if (key !== name) continue;
-    try { return decodeURIComponent(part.slice(index + 1).trim()); }
-    catch { return part.slice(index + 1).trim(); }
+    if (index < 0 || part.slice(0, index).trim() !== name) continue;
+    const value = part.slice(index + 1).trim();
+    try { return decodeURIComponent(value); } catch { return value; }
   }
   return '';
+}
+
+async function isAdminSocket(socket) {
+  if (!socket.user?.id) return false;
+  if (socket.user.role === 'admin') return true;
+  const user = await User.findById(socket.user.id).select('role isBanned');
+  return user?.role === 'admin' && !user?.isBanned;
 }
 
 const initSocket = (server) => {
@@ -40,24 +31,22 @@ const initSocket = (server) => {
       origin: [
         'http://127.0.0.1:5500',
         'http://localhost:5500',
-        'https://paddox.vercel.app'
+        'https://paddox.vercel.app',
+        'https://paddox.store',
+        'https://www.paddox.store'
       ],
-      methods    : ['GET','POST'],
-      credentials: true,
+      methods: ['GET', 'POST'],
+      credentials: true
     },
-    pingTimeout  : 60000,
-    pingInterval : 25000,
+    pingTimeout: 60000,
+    pingInterval: 25000
   });
 
-  /* ── Auth middleware for socket ── */
   io.use(async (socket, next) => {
-    const token =
-      socket.handshake.auth?.token ||
-      socket.handshake.query?.token ||
+    const token = socket.handshake.auth?.token ||
       socketCookie(socket.request?.headers?.cookie, 'accessToken');
 
     if (!token) {
-      /* Public socket access remains available for feed/chat viewing. */
       socket.user = null;
       return next();
     }
@@ -68,115 +57,115 @@ const initSocket = (server) => {
         .select('firstName lastName avatar role fanTier isBanned');
 
       if (!user || user.isBanned) {
-        socket.user = null;
-        return next();
+        return next(new Error('Authentication required'));
       }
 
       socket.user = {
-        id:String(user._id),
-        role:user.role,
-        name:`${user.firstName || ''} ${user.lastName || ''}`.trim() || 'PADDOX Fan',
-        avatar:user.avatar?.url || '',
-        fanTier:user.fanTier || 'Regular'
+        id: String(user._id),
+        role: user.role,
+        name: `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'PADDOX Fan',
+        avatar: user.avatar?.url || '',
+        fanTier: user.fanTier || 'Regular'
       };
       return next();
     } catch {
-      socket.user = null;
-      return next();
+      return next(new Error('Invalid or expired socket session'));
     }
   });
 
-  io.on('connection', (socket) => {
-    const userId = socket.user?.id || 'anonymous';
-    console.log(`🔌 Socket connected: ${socket.id} (user: ${userId})`);
+  io.on('connection', socket => {
+    console.log(`Socket connected: ${socket.id} (${socket.user?.id || 'guest'})`);
 
-    /* Join user-specific room */
-    if (socket.user?.id) {
-      socket.join(`user:${socket.user.id}`);
-    }
-
-    /* Fan Hub Live Grid chat: presence + typing */
+    if (socket.user?.id) socket.join(`user:${socket.user.id}`);
     registerCommunityChatSocket(io, socket);
 
-    /* ── Admin notification relays ── */
-    socket.on('admin:new-drop', async (payload = {}) => {
-      if (!(await isAdminSocket(socket))) return;
-      const kind = String(payload.kind || payload.type || 'product').toLowerCase();
+    const requireAdmin = async () => {
+      try { return await isAdminSocket(socket); } catch { return false; }
+    };
+
+    socket.on('admin:new-drop', async payload => {
+      if (!(await requireAdmin())) return;
+      const data = payload && typeof payload === 'object' ? payload : {};
+      const kind = String(data.kind || data.type || 'product').toLowerCase();
       const eventName = kind.includes('asset') ? 'asset:new-drop' : 'product:new-drop';
       io.emit(eventName, {
-        ...payload,
-        kind,
-        createdAt: payload.createdAt || new Date().toISOString()
+        title: String(data.title || '').slice(0, 120),
+        kind: eventName === 'asset:new-drop' ? 'asset' : 'product',
+        createdAt: new Date().toISOString()
       });
     });
 
-    socket.on('admin:race-alert', async (payload = {}) => {
-      if (!(await isAdminSocket(socket))) return;
+    socket.on('admin:race-alert', async payload => {
+      if (!(await requireAdmin())) return;
+      const data = payload && typeof payload === 'object' ? payload : {};
       io.emit('race:notification', {
-        title: payload.title || 'Race alert',
-        message: payload.message || 'A PADDOX race alert is live.',
+        title: String(data.title || 'Race alert').slice(0, 120),
+        message: String(data.message || 'A PADDOX race alert is live.').slice(0, 500),
         category: 'Race Alerts',
-        ref: payload.ref || payload.title || Date.now(),
-        createdAt: payload.createdAt || new Date().toISOString()
+        createdAt: new Date().toISOString()
       });
     });
 
-    socket.on('admin:community-update', async (payload = {}) => {
-      if (!(await isAdminSocket(socket))) return;
+    socket.on('admin:community-update', async payload => {
+      if (!(await requireAdmin())) return;
+      const data = payload && typeof payload === 'object' ? payload : {};
       io.emit('community:notification', {
-        title: payload.title || 'Community update',
-        message: payload.message || 'New PADDOX community activity is live.',
-        category: payload.category || 'Fan Hub',
-        ref: payload.ref || payload.title || Date.now(),
-        createdAt: payload.createdAt || new Date().toISOString()
+        title: String(data.title || 'Community update').slice(0, 120),
+        message: String(data.message || 'New PADDOX community activity is live.').slice(0, 500),
+        category: String(data.category || 'Fan Hub').slice(0, 60),
+        createdAt: new Date().toISOString()
       });
     });
 
-    /* ── Fan Feed events ── */
-    socket.on('fan:join-room', ({ room }) => {
+    // Only authenticated fans may join the single public fan room.
+    socket.on('fan:join-room', payload => {
+      if (!socket.user?.id) return socket.emit('error', { message: 'Authentication required' });
+      const room = String(payload?.room || '');
+      if (room !== 'fan:global') return socket.emit('error', { message: 'Room not allowed' });
       socket.join(room);
-      socket.emit('fan:joined', { room, message: `Joined room: ${room}` });
+      socket.emit('fan:joined', { room });
     });
 
-    socket.on('fan:leave-room', ({ room }) => {
-      socket.leave(room);
+    socket.on('fan:leave-room', payload => {
+      const room = String(payload?.room || '');
+      if (room === 'fan:global') socket.leave(room);
     });
 
-    socket.on('fan:post', async (data) => {
-      if (!socket.user) {
-        return socket.emit('error', { message: 'Authentication required to post' });
+    socket.on('fan:post', payload => {
+      if (!socket.user?.id) return socket.emit('error', { message: 'Authentication required to post' });
+      const message = String(payload?.text || '').trim();
+      if (!message || message.length > 280) {
+        return socket.emit('error', { message: 'Post must contain 1–280 characters' });
       }
-      const post = {
-        user    : socket.user.name || 'Fan',
-        text    : data.text?.slice(0, 280),
-        time    : 'Just now',
-        userId  : socket.user.id,
-        avatar  : socket.user.avatar || '👤',
-      };
-      io.emit('fan:new-post', post);
+      io.to('fan:global').emit('fan:new-post', {
+        user: socket.user.name,
+        text: message,
+        time: 'Just now',
+        userId: socket.user.id,
+        avatar: socket.user.avatar || '👤'
+      });
     });
 
-    /* ── Poll vote broadcast ── */
-    socket.on('poll:vote', (data) => {
-      io.emit('poll:vote-update', data);
+    // Poll results are authoritative through the REST API, never client-broadcast.
+    socket.on('poll:vote', () => {
+      socket.emit('error', { message: 'Submit votes through the PADDOX poll API' });
     });
 
-    /* ── Race room ── */
-    socket.on('race:join', ({ sessionKey }) => {
+    // Race rooms are read-only and accept a constrained session key.
+    socket.on('race:join', payload => {
+      const sessionKey = String(payload?.sessionKey || '');
+      if (!/^[a-zA-Z0-9_-]{1,80}$/.test(sessionKey)) {
+        return socket.emit('error', { message: 'Invalid race session' });
+      }
       socket.join(`race:${sessionKey}`);
-      console.log(`🏎️  Socket ${socket.id} joined race room: ${sessionKey}`);
     });
 
-    socket.on('disconnect', (reason) => {
-      console.log(`🔌 Socket disconnected: ${socket.id} (${reason})`);
-    });
-
-    socket.on('error', (err) => {
-      console.error('Socket error:', err);
+    socket.on('disconnect', reason => {
+      console.log(`Socket disconnected: ${socket.id} (${reason})`);
     });
   });
 
-  console.log('✅ WebSocket server initialised');
+  console.log('PADDOX Socket.IO initialised');
   return io;
 };
 
@@ -186,4 +175,3 @@ const getIO = () => {
 };
 
 module.exports = { initSocket, getIO };
-
