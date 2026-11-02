@@ -79,7 +79,7 @@ function buildMerchReceiptEmail(order, customer = {}) {
           <div style="letter-spacing:6px;font-size:13px;font-weight:900;color:#e8002d;text-transform:uppercase">PADDOX</div>
           <h1 style="font-size:32px;line-height:1.1;margin:12px 0 8px;color:#fff;text-transform:uppercase">Order Receipt</h1>
           <p style="margin:0 0 22px;color:#b7b7b7;line-height:1.6">
-            Hey ${escapeHtml(customer.firstName || address.name || 'Fan')}, your PADDOX merchandise order has been placed successfully.
+            Hey ${escapeHtml(customer.firstName || address.name || 'Fan')}, your PADDOX merchandise demo order has been placed successfully.
           </p>
 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:22px">
@@ -119,7 +119,7 @@ function buildMerchReceiptEmail(order, customer = {}) {
             ${Number(pricing.discount || 0) ? `<div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Coupon ${escapeHtml(coupon.code || '')}</span><strong>- ${rupee(pricing.discount)}</strong></div>` : ''}
             <div style="display:flex;justify-content:space-between;margin-bottom:8px;color:#bbb"><span>Shipping</span><strong>${Number(pricing.shipping || 0) ? rupee(pricing.shipping) : 'FREE'}</strong></div>
             <div style="display:flex;justify-content:space-between;margin-bottom:12px;color:#bbb"><span>Tax</span><strong>${rupee(pricing.tax)}</strong></div>
-            <div style="display:flex;justify-content:space-between;border-top:1px solid #303030;padding-top:14px;color:#fff;font-size:20px"><span style="font-weight:900">Total Paid</span><strong style="color:#e8002d">${rupee(pricing.total)}</strong></div>
+            <div style="display:flex;justify-content:space-between;border-top:1px solid #303030;padding-top:14px;color:#fff;font-size:20px"><span style="font-weight:900">Order Total</span><strong style="color:#e8002d">${rupee(pricing.total)}</strong></div>
           </div>
 
           <a href="${receiptUrl}" style="display:inline-block;background:#e8002d;color:#fff;text-decoration:none;padding:14px 22px;font-weight:900;letter-spacing:2px;text-transform:uppercase">
@@ -234,7 +234,10 @@ exports.placeOrder = async (req, res) => {
         return errorResponse(res, 400, 'Product id missing in order item');
       }
 
-      const quantity = Number(item.quantity || item.qty || 1);
+      const quantity = Number(item.quantity ?? item.qty ?? 1);
+      if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 99) {
+        return errorResponse(res, 400, 'Quantity must be a whole number between 1 and 99');
+      }
 
       const product = await Product.findById(productId);
 
@@ -333,21 +336,32 @@ exports.placeOrder = async (req, res) => {
       coupon: couponPayload,
       payment: {
         method: normalisedPaymentMethod,
-        status: normalisedPaymentMethod === 'cod' ? 'pending' : 'paid',
-        razorpayPaymentId: normalisedPaymentMethod === 'cod'
-          ? ''
-          : `PDX-PAY-${Date.now()}`,
-        paidAt: normalisedPaymentMethod === 'cod' ? null : new Date()
+        // PADDOX currently uses a demo checkout only. No real payment is collected.
+        status: 'pending',
+        provider: 'demo',
+        demoReference: `PDX-DEMO-${Date.now()}`,
+        paidAt: null
       },
       notes
     });
 
-    /* Deduct stock */
+    /* Atomically reserve stock. Roll back the order and prior reservations
+       if any item is no longer available by the time checkout is submitted. */
+    const reservedItems = [];
     for (const item of orderItems) {
-      await Product.findByIdAndUpdate(
-        item.product,
-        { $inc: { stock: -item.quantity } }
+      const reserved = await Product.findOneAndUpdate(
+        { _id: item.product, isActive: true, stock: { $gte: item.quantity } },
+        { $inc: { stock: -item.quantity } },
+        { new: true }
       );
+      if (!reserved) {
+        await Promise.all(reservedItems.map(previous =>
+          Product.findByIdAndUpdate(previous.product, { $inc: { stock: previous.quantity } })
+        ));
+        await Order.findByIdAndDelete(order._id);
+        return errorResponse(res, 409, 'Stock changed during checkout. Please review your cart and try again.');
+      }
+      reservedItems.push(item);
     }
 
     if (couponDoc) {
