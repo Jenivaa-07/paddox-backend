@@ -180,6 +180,16 @@ const orderSchema = new mongoose.Schema({
       enum: ['pending', 'paid', 'failed', 'refunded'],
       default: 'pending'
     },
+    provider: {
+      type: String,
+      enum: ['demo', 'razorpay'],
+      default: 'demo'
+    },
+    demoReference: {
+      type: String,
+      default: ''
+    },
+    // Retained only for legacy records; current PADDOX checkout does not use Razorpay.
     razorpayOrderId: String,
     razorpayPaymentId: String,
     razorpaySignature: String,
