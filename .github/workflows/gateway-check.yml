@@ -19,11 +19,19 @@ jobs:
           find . -path ./node_modules -prune -o -name '*.js' -print0 | xargs -0 -n1 node --check
       - name: Run backend tests
         run: npm test
+      - name: Check AI gateway modules
+        run: |
+          node --check services/aiClient.service.js
+          node --check controllers/racePrediction.controller.js
+          node --check routes/f1.routes.js
       - name: Load critical checkout and realtime modules
         run: |
           node - <<'NODE'
           require('./models/Order');
           require('./controllers/order.controller');
           require('./config/socket');
-          console.log('PADDOX checkout and realtime modules loaded successfully');
+          require('./services/aiClient.service');
+          require('./controllers/racePrediction.controller');
+          require('./routes/f1.routes');
+          console.log('PADDOX checkout, realtime and AI gateway modules loaded successfully');
           NODE
