@@ -20,7 +20,6 @@ function socketCookie(header = '', name = '') {
 
 async function isAdminSocket(socket) {
   if (!socket.user?.id) return false;
-  if (socket.user.role === 'admin') return true;
   const user = await User.findById(socket.user.id).select('role isBanned');
   return user?.role === 'admin' && !user?.isBanned;
 }
